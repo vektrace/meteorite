@@ -271,6 +271,7 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                         }
                         Err(err) => {
                             // check for another soft logout/no available refresh token (exchange device id for new access token)
+                            // TODO: send back device id as well (to not create a new one)
                             match err {
                                 RefreshTokenError::RefreshTokenRequired => {}
                                 RefreshTokenError::MatrixAuth(http_error)
