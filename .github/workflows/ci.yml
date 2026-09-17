@@ -95,6 +95,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Setup Android SDK & NDK
+        uses: amyu/setup-android@09345fc2cbed5b3a92beea84d843a22eac6cc841
+        with:
+          ndk-version: "25.2.9519653"
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
