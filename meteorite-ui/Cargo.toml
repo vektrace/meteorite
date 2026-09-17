@@ -13,7 +13,7 @@ meteorite-core = { path = "../meteorite-core" }
 tokio = { workspace = true }
 webbrowser = { workspace = true }
 
-dioxus = { version = "0.7.1", features = [] }
+dioxus = { version = "0.8.0-alpha.1", features = [] }
 
 [features]
 default = ["desktop"]
