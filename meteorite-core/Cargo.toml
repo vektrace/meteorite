@@ -8,7 +8,7 @@ publish = false
 age = "0.12.1"
 anyhow = "1.0.102"
 keyring-core = "1.0.0"
-matrix-sdk = { version = "0.18.0", features = [
+matrix-sdk = { version = "0.19.0", features = [
     "bundled-sqlite",
     "e2e-encryption",
     "automatic-room-key-forwarding",
@@ -18,10 +18,8 @@ matrix-sdk = { version = "0.18.0", features = [
 rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
 sysdirs = { version = "0.9.4", features = ["android-auto"] }
-thiserror = "2.0.18"
 tokio = { workspace = true }
 toml = "1.1.2"
-url = "2.5.8"
 webbrowser = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
