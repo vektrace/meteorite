@@ -100,6 +100,10 @@ jobs:
         with:
           ndk-version: "25.2.9519653"
 
+      - name: Add NDK to PATH
+        run: |
+          echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
