@@ -4267,7 +4267,7 @@ dependencies = [
  "oauth2-reqwest",
  "percent-encoding",
  "pin-project-lite",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "ruma",
  "serde",
@@ -4361,7 +4361,7 @@ dependencies = [
  "matrix-sdk-common",
  "matrix-sdk-qrcode",
  "pbkdf2 0.13.0",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rmp-serde",
  "ruma",
  "serde",
@@ -4467,7 +4467,7 @@ dependencies = [
  "hkdf 0.13.0",
  "hmac 0.13.0",
  "pbkdf2 0.13.0",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -4579,7 +4579,7 @@ dependencies = [
  "apple-native-keyring-store",
  "keyring-core",
  "matrix-sdk",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "sysdirs",
  "tokio",
@@ -5698,7 +5698,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -5769,9 +5769,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20 0.10.1",
  "getrandom 0.4.3",
@@ -6159,7 +6159,7 @@ dependencies = [
  "js_int",
  "konst 0.4.3",
  "percent-encoding",
- "rand 0.10.2",
+ "rand 0.10.3",
  "regex",
  "ruma-identifiers-validation",
  "ruma-macros",
@@ -7645,7 +7645,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
 dependencies = [
- "rand 0.10.2",
+ "rand 0.10.3",
  "web-time",
 ]
 
@@ -7814,7 +7814,7 @@ dependencies = [
  "hpke 0.14.1",
  "matrix-pickle",
  "prost",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "serde_bytes",
  "serde_json",
