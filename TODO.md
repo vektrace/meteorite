@@ -5,6 +5,7 @@
   - [x] SSO
   - [ ] OAuth
   - [x] Username
+- [ ] Remove SSO login (will be deprecated, does not need to be removed right now)
 - [ ] Device verification (Emoji & QR)
 - [ ] Sending & receiving messages
 - [ ] Multi-Account
@@ -21,8 +22,6 @@
 - [ ] proper-er error handling for loading screen login
 
 - TODOs in files:
-  - Login
-    - [ ] meteorite-core/src/auth.rs: check if access token expired
   - UI
     - [ ] meteorite-ui/src/main.rs: set icon
     - [ ] meteorite-ui/src/main.rs: adjust title based on what the user is doing, e.g. (3) meteorite - Matrix HQ
