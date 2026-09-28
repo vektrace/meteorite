@@ -16,17 +16,16 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::{ACCOUNT_PATH, APP_NAME, INITIAL_DEVICE_NAME, utils};
+use super::{
+    Account, AccountData, AccountList, SecureAccountData, load_account_list, remove_account,
+};
+use crate::{ACCOUNT_PATH, APP_NAME, utils};
 use age::secrecy::SecretString;
 use keyring_core::Entry;
 use matrix_sdk::{
-    AuthSession, Client, RefreshTokenError, SessionChange, SessionMeta, SessionTokens,
-    authentication::{
-        matrix::MatrixSession,
-        oauth::{ClientId, OAuthSession, UserSession},
-    },
+    Client, RefreshTokenError, SessionChange,
     ruma::{
-        OwnedDeviceId, OwnedUserId,
+        OwnedUserId,
         api::{
             client::session::get_login_types::v3::{IdentityProvider, LoginType},
             error::ErrorKind,
@@ -34,66 +33,19 @@ use matrix_sdk::{
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{fs, path::Path, path::PathBuf};
 use tokio::sync::mpsc;
 
-// This file contains all functions for authenticating a user. That includes loading necessary
+pub mod login;
+
+// The files in this folder contain all functions for authenticating a user. That includes loading necessary
 // config files, getting passwords from keyring and using matrix sdks functions to send requests to
 // the users homeserver.
 
 // SESSION STORING
 // store sessions in encrypted files (using age crate) and store passphrase to tht in keyring
 // user_ids are stored in unencrypted with information if its active or not
-
-// this struct only exists for toml
-#[derive(Default, Deserialize, Serialize, Clone)]
-struct AccountList {
-    accounts: Vec<AccountData>,
-}
-
-// used for restoring sessions
-struct Account {
-    data: AccountData,
-    secure_data: SecureAccountData,
-}
-
-// stored in unencrypted file, lets the client decide which data to load
-#[derive(Deserialize, Serialize, Clone)]
-struct AccountData {
-    // id used for files instead of user_id
-    id: String,
-    user_id: OwnedUserId,
-    active: bool,
-}
-
-// stored in encrypted file, passphrase stored in keyring
-// only loaded when required
-#[derive(Deserialize, Serialize)]
-struct SecureAccountData {
-    access_token: String,
-    refresh_token: Option<String>,
-    device_id: OwnedDeviceId,
-    // only present when logged in via oauth
-    client_id: Option<ClientId>,
-}
-
-impl SecureAccountData {
-    fn new(
-        access_token: String,
-        refresh_token: Option<String>,
-        device_id: OwnedDeviceId,
-        client_id: Option<ClientId>,
-    ) -> Self {
-        Self {
-            access_token,
-            refresh_token,
-            device_id,
-            client_id,
-        }
-    }
-}
 
 // guard to clean up failed account creations
 struct AccountCreationGuard {
@@ -285,7 +237,7 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                                 }
                             }
 
-                            remove_account_config(
+                            remove_account(
                                 client
                                     .user_id()
                                     .expect("Client should be authenticated")
@@ -296,7 +248,7 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                     }
                 } else {
                     // session destroyed, dont reuse
-                    remove_account_config(
+                    remove_account(
                         client
                             .user_id()
                             .expect("Client should be authenticated")
@@ -307,167 +259,6 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
             }
         }
     });
-}
-
-/// Tries to log the user into the currently active account.
-///
-/// Also reads the files necessary to login the user (users.toml, encrypted files, keyring entry).
-/// On success, an authenticated Client is returned.
-///
-/// Can return `None` instead of a client when there is no active account
-pub async fn login() -> anyhow::Result<Option<Client>> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
-
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    let accounts = load_account_list(&users_path)?;
-    let Some(account_data) = active_account(&accounts.accounts) else {
-        return Ok(None);
-    };
-
-    // define the paths once
-    let secure_path = account_path.join(format!("{}.enc", account_data.id));
-    let sqlite_path = account_path.join(&account_data.id);
-
-    let encryption_passphrase = load_encryption_passphrase(&account_data.id)?;
-
-    let secure_account_data = load_secure_account_data(&secure_path, &encryption_passphrase)?;
-
-    // construct the client
-    let client = Client::builder()
-        .server_name_or_homeserver_url(account_data.user_id.server_name())
-        .sqlite_store(
-            sqlite_path,
-            Some(&encryption_passphrase), // same as for encrypted files
-        )
-        .build()
-        .await?;
-
-    // restore session from the unified account struct
-    client
-        .restore_session(Account {
-            data: account_data.clone(),
-            secure_data: secure_account_data,
-        })
-        .await?;
-
-    Ok(Some(client))
-}
-
-/// Tries to log a user in with the provided homeserver, username and password.
-///
-/// Also saves the new data (users.toml, encrypted file, keyring entry)
-/// On success, an authenticated Client is returned.
-pub async fn login_username(
-    homeserver: String,
-    username: String,
-    password: String,
-) -> anyhow::Result<Client> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
-
-    // get id and passphrase
-    let (id, encryption_passphrase) = generate_account_credentials();
-
-    // define paths
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-    let sqlite_path = account_path.join(&id);
-
-    tokio::fs::create_dir_all(&account_path).await?;
-
-    // construct client
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
-        .build()
-        .await?;
-
-    // start login
-    let response = client
-        .matrix_auth()
-        .login_username(&username, &password)
-        .initial_device_display_name(&utils::unwrap_lock(&INITIAL_DEVICE_NAME))
-        .request_refresh_token()
-        .await?;
-
-    // construct new secure account data from response
-    let secure_data = SecureAccountData::new(
-        response.access_token,
-        response.refresh_token,
-        response.device_id,
-        None,
-    );
-
-    tokio::task::spawn_blocking(move || {
-        save_new_account(&id, response.user_id, &secure_data, &encryption_passphrase)
-    })
-    .await??;
-
-    Ok(client)
-}
-
-/// Tries to log a user in via their homeserver.
-///
-/// Also saves the new data (users.toml, encrypted file, keyring entry)
-/// On success, an authenticated Client is returned.
-pub async fn login_sso(
-    homeserver: String,
-    tx: mpsc::UnboundedSender<String>,
-) -> anyhow::Result<Client> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
-
-    // initialize rng for later usage
-    let (id, encryption_passphrase) = generate_account_credentials();
-
-    // define the paths once
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-    let sqlite_path = account_path.join(&id);
-
-    tokio::fs::create_dir_all(&account_path).await?;
-
-    // construct the client
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
-        .build()
-        .await?;
-
-    // start sso login
-    let response = client
-        .matrix_auth()
-        .login_sso(|sso_url| async move {
-            if webbrowser::open(&sso_url).is_ok() {
-                tx.send("Go to the opened website to authenticate".to_string())
-                    .ok();
-            } else {
-                tx.send(format!("Navigate to {sso_url} in a browser of choice"))
-                    .ok();
-            }
-            Ok(())
-        })
-        .initial_device_display_name(&utils::unwrap_lock(&INITIAL_DEVICE_NAME))
-        .request_refresh_token()
-        .await?;
-
-    // construct new secure account data from response
-    let secure_data = SecureAccountData::new(
-        response.access_token,
-        response.refresh_token,
-        response.device_id,
-        None,
-    );
-
-    tokio::task::spawn_blocking(move || {
-        save_new_account(&id, response.user_id, &secure_data, &encryption_passphrase)
-    })
-    .await??;
-
-    Ok(client)
 }
 
 fn remove_orphaned_accounts() {
@@ -597,34 +388,6 @@ fn remove_orphaned_accounts() {
     fs::write(&users_path, toml_account_data).ok();
 }
 
-pub fn set_active_account(user_id: &str, active: bool) -> anyhow::Result<()> {
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    let mut accounts = load_account_list(&users_path)?;
-
-    // check if account exists
-    accounts
-        .accounts
-        .iter()
-        .any(|account| account.user_id == user_id)
-        .ok_or_else(|| anyhow::anyhow!("User not found: {}", user_id))?;
-
-    accounts.accounts.iter_mut().for_each(|account| {
-        if account.user_id == user_id {
-            account.active = active;
-        } else {
-            account.active = false;
-        }
-    });
-
-    let toml_account_data = toml::to_string(&accounts)?;
-
-    fs::write(&users_path, toml_account_data)?;
-
-    Ok(())
-}
-
 fn update_account_config(
     user_id: &str,
     access_token: Option<String>,
@@ -671,66 +434,11 @@ fn update_account_config(
     Ok(())
 }
 
-pub fn remove_account_config(user_id: &str) {
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    let Ok(mut accounts) = load_account_list(&users_path) else {
-        return;
-    };
-
-    let Some(account) = accounts
-        .accounts
-        .iter()
-        .find(|account| account.user_id == user_id)
-    else {
-        return;
-    };
-
-    let account_id = account.id.clone();
-
-    let dir_path = account_path.join(&account_id);
-
-    if !dir_path.exists() {
-        return;
-    }
-
-    let enc_path = account_path.join(format!("{}.enc", account_id));
-
-    if !enc_path.exists() {
-        return;
-    }
-
-    let Ok(entry) = Entry::new(APP_NAME, &account_id) else {
-        return;
-    };
-
-    fs::remove_dir_all(dir_path).ok();
-    fs::remove_file(enc_path).ok();
-    entry.delete_credential().ok();
-    accounts.accounts.retain(|a| a.id != account_id);
-
-    let Ok(toml_account_data) = toml::to_string(&accounts) else {
-        return;
-    };
-
-    fs::write(&users_path, toml_account_data).ok();
-}
-
 fn atomic_write<C: AsRef<[u8]>>(target: &Path, contents: C) -> anyhow::Result<()> {
     let tmp = target.with_extension("tmp");
     fs::write(&tmp, contents)?;
     fs::rename(&tmp, target)?;
     Ok(())
-}
-
-fn load_account_list(path: &Path) -> anyhow::Result<AccountList> {
-    if !path.exists() {
-        return Ok(AccountList::default());
-    }
-
-    let toml_account_data = fs::read_to_string(path)?;
-    toml::from_str(&toml_account_data).map_err(|e| anyhow::anyhow!(e))
 }
 
 fn load_secure_account_data(
@@ -858,37 +566,4 @@ fn save_new_account(
     guard.commit();
 
     Ok(())
-}
-
-impl From<Account> for AuthSession {
-    fn from(account: Account) -> Self {
-        if let Some(client_id) = account.secure_data.client_id {
-            OAuthSession {
-                client_id,
-                user: UserSession {
-                    meta: SessionMeta {
-                        user_id: account.data.user_id,
-                        device_id: account.secure_data.device_id,
-                    },
-                    tokens: SessionTokens {
-                        access_token: account.secure_data.access_token,
-                        refresh_token: account.secure_data.refresh_token,
-                    },
-                },
-            }
-            .into()
-        } else {
-            MatrixSession {
-                meta: SessionMeta {
-                    user_id: account.data.user_id,
-                    device_id: account.secure_data.device_id,
-                },
-                tokens: SessionTokens {
-                    access_token: account.secure_data.access_token,
-                    refresh_token: account.secure_data.refresh_token,
-                },
-            }
-            .into()
-        }
-    }
 }

@@ -16,8 +16,9 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use super::{CLIENT, LoginStage, account, components};
+use super::{CLIENT, LoginStage, components};
 use dioxus::prelude::*;
+use meteorite_core::account::auth;
 
 #[component]
 pub fn LoginScreen() -> Element {
@@ -36,7 +37,7 @@ pub fn LoginScreen() -> Element {
     let mut is_busy = use_signal(|| false);
     let mut current_task = use_signal(|| Option::<dioxus_core::Task>::None);
 
-    let mut login_choices = use_signal(|| Option::<Vec<account::LoginChoice>>::None);
+    let mut login_choices = use_signal(|| Option::<Vec<auth::LoginChoice>>::None);
 
     use_effect(move || {
         let _stage = displayed_stage();
@@ -93,7 +94,7 @@ pub fn LoginScreen() -> Element {
         let hs = homeserver.read().clone();
 
         let task = spawn(async move {
-            let handle = tokio::spawn(account::get_login_types(hs));
+            let handle = tokio::spawn(auth::get_login_types(hs));
 
             match handle.await {
                 Ok(Ok(choices)) => {
@@ -130,7 +131,7 @@ pub fn LoginScreen() -> Element {
         let task = spawn(async move {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let mut handle = tokio::spawn(account::login_sso(hs, tx));
+            let mut handle = tokio::spawn(auth::login::login_sso(hs, tx));
 
             loop {
                 tokio::select! {
@@ -147,7 +148,7 @@ pub fn LoginScreen() -> Element {
                             }
                             Err(_) => {
                                 // *should* not happen
-                                error.set(Some("accountentication process aborted".into()));
+                                error.set(Some("Authentication process aborted".into()));
                             }
                         }
                         break;
@@ -181,7 +182,7 @@ pub fn LoginScreen() -> Element {
         let pass = password.read().clone();
 
         let task = spawn(async move {
-            let handle = tokio::spawn(account::login_username(hs, user, pass));
+            let handle = tokio::spawn(auth::login::login_username(hs, user, pass));
 
             match handle.await {
                 Ok(Ok(c)) => {
@@ -192,7 +193,7 @@ pub fn LoginScreen() -> Element {
                 }
                 Err(_) => {
                     // *should* not happen
-                    error.set(Some("accountentication process aborted".into()));
+                    error.set(Some("Authentication process aborted".into()));
                 }
             }
 
@@ -314,8 +315,8 @@ pub fn LoginScreen() -> Element {
                                 ),
 
                                 if let Some(choices) = &*login_choices.read()
-                                    && choices.iter().any(|c| matches!(c, account::LoginChoice::Password))
-                                    && choices.iter().all(|c| !matches!(c, account::LoginChoice::Oauth { preferred: true }))
+                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Password))
+                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true }))
                                 {
                                     TextField {
                                         label: "Username",
@@ -344,8 +345,8 @@ pub fn LoginScreen() -> Element {
                                 }
 
                                 if let Some(choices) = &*login_choices.read()
-                                    && choices.iter().any(|c| matches!(c, account::LoginChoice::Sso {identity_providers: _ }))
-                                    && choices.iter().all(|c| !matches!(c, account::LoginChoice::Oauth { preferred: true }))
+                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Sso {identity_providers: _ }))
+                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true }))
                                 {
                                     button {
                                         class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",

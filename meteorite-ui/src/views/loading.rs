@@ -16,8 +16,9 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use super::{CLIENT, account, components, login};
+use super::{CLIENT, components, login};
 use dioxus::prelude::*;
+use meteorite_core::account::auth;
 
 #[component]
 pub fn LoadingScreen() -> Element {
@@ -30,7 +31,7 @@ pub fn LoadingScreen() -> Element {
         let _ = retry();
 
         async move {
-            let handle = tokio::spawn(async move { account::login().await });
+            let handle = tokio::spawn(async move { auth::login::login().await });
 
             match handle.await {
                 Ok(Ok(Some(client))) => {

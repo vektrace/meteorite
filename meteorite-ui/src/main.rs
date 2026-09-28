@@ -21,7 +21,7 @@
 use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
 use meteorite_core::Client;
-use meteorite_core::{account, base_path, init};
+use meteorite_core::{base_path, init};
 
 mod components;
 mod views;
