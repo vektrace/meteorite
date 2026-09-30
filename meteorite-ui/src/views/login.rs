@@ -131,7 +131,7 @@ pub fn LoginScreen() -> Element {
         let task = spawn(async move {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let mut handle = tokio::spawn(auth::login::login_sso(hs, tx));
+            let mut handle = tokio::spawn(auth::login_sso(hs, tx));
 
             loop {
                 tokio::select! {
@@ -182,7 +182,7 @@ pub fn LoginScreen() -> Element {
         let pass = password.read().clone();
 
         let task = spawn(async move {
-            let handle = tokio::spawn(auth::login::login_username(hs, user, pass));
+            let handle = tokio::spawn(auth::login_username(hs, user, pass));
 
             match handle.await {
                 Ok(Ok(c)) => {

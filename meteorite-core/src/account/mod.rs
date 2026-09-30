@@ -194,3 +194,13 @@ fn load_account_list(path: &Path) -> anyhow::Result<AccountList> {
     let toml_account_data = fs::read_to_string(path)?;
     toml::from_str(&toml_account_data).map_err(|e| anyhow::anyhow!(e))
 }
+
+fn active_account(accounts: &[AccountData]) -> Option<&AccountData> {
+    // filter the accounts for only active accounts
+    let mut active_accounts = accounts.iter().filter(|a| a.active);
+    // if multiple, no account is active
+    match (active_accounts.next(), active_accounts.next()) {
+        (Some(account), None) => Some(account),
+        _ => None,
+    }
+}
