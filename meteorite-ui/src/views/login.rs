@@ -33,6 +33,7 @@ pub fn LoginScreen() -> Element {
     let password = use_signal(String::new);
 
     let mut error = use_signal(|| Option::<String>::None);
+    let mut link = use_signal(|| Option::<String>::None);
     let mut is_busy = use_signal(|| false);
     let mut current_task = use_signal(|| Option::<dioxus_core::Task>::None);
 
@@ -157,6 +158,52 @@ pub fn LoginScreen() -> Element {
         current_task.set(Some(task));
     };
 
+    let start_oauth_login = move |_| {
+        if is_busy() {
+            return;
+        }
+
+        cancel_active_task();
+
+        is_busy.set(true);
+        error.set(None);
+
+        let hs = homeserver.read().clone();
+
+        let task = spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+            let mut handle = tokio::spawn(auth::oauth::login(hs, tx));
+
+            loop {
+                tokio::select! {
+                    Some(l) = rx.recv() => {
+                    link.set(Some(l));
+                }
+                    res = &mut handle => {
+                    match res {
+                            Ok(Ok(c)) => {
+                                *CLIENT.write() = Some(c);
+                            }
+                    Ok(Err(e)) => {
+                        error.set(Some(e.to_string()));
+                    }
+                    Err(_) => {
+                        // *should* not happen
+                        error.set(Some("Authentication process aborted".into()));
+                    }
+                        }
+                        break;
+                }
+                }
+            }
+
+            is_busy.set(false);
+        });
+
+        current_task.set(Some(task));
+    };
+
     rsx! {
         components::Bg {
             div {
@@ -165,6 +212,15 @@ pub fn LoginScreen() -> Element {
                     div {
                         class: "absolute top-12 z-50 w-full max-w-md p-4 rounded-lg bg-red-400 border-2 border-red-600 text-neutral-800 text-center shadow-lg transition-all duration-300 animate-fade-in",
                         "{err_msg}"
+                    }
+                }
+
+                if is_busy() {
+                    if let Some(link) = link() {
+                        div {
+                            class: "absolute top-24 z-40 w-full max-w-md p-3 rounded-lg bg-neutral-900 border border-neutral-700 text-white text-center shadow-xl transition-all duration-300 animate-fade-in",
+                            "{link}"
+                        }
                     }
                 }
 
@@ -241,6 +297,7 @@ pub fn LoginScreen() -> Element {
                                         onclick: move |_| {
                                             cancel_active_task();
                                             is_busy.set(false);
+                                            link.set(None);
                                         },
                                         "Cancel"
                                     }
@@ -291,6 +348,15 @@ pub fn LoginScreen() -> Element {
                                     }
                                 }
 
+                                if let Some(choices) = &*login_choices.read()
+                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { preferred: _ }))
+                                {
+                                    button {
+                                        class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
+                                        onclick: start_oauth_login,
+                                        "Continue with Homeserver"
+                                    }
+                                }
                                 if !is_busy() {
                                     button {
                                         class: "w-full py-2 bg-transparent hover:bg-neutral-700/50 rounded-lg text-neutral-400 text-sm transition-colors cursor-pointer",
@@ -309,6 +375,7 @@ pub fn LoginScreen() -> Element {
                                         onclick: move |_| {
                                             cancel_active_task();
                                             is_busy.set(false);
+                                            link.set(None);
                                         },
                                         "Cancel"
                                     }
