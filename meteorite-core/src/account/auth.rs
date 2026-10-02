@@ -380,7 +380,10 @@ pub mod oauth {
     ///
     /// Also saves the new data (users.toml, encrypted file, keyring entry)
     /// On success, an authenticated Client is returned.
-    pub async fn login(homeserver: String) -> anyhow::Result<Client> {
+    pub async fn login(
+        homeserver: String,
+        tx: mpsc::UnboundedSender<String>,
+    ) -> anyhow::Result<Client> {
         remove_orphaned_accounts();
 
         let (id, encryption_passphrase) = generate_account_credentials();
@@ -434,8 +437,13 @@ pub mod oauth {
             .await?;
 
         let query_string = {
-            // TODO: send text to ui
-            println!("Navigate to {url} in a browser of choice");
+            if webbrowser::open(url.as_str()).is_ok() {
+                tx.send("Go to the opened website to authenticate".to_string())
+                    .ok();
+            } else {
+                tx.send(format!("Navigate to {url} in a browser of choice"))
+                    .ok();
+            }
 
             server_handle.await
         };
