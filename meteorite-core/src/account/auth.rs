@@ -409,7 +409,7 @@ pub mod oauth {
         );
 
         let metadata = Raw::new(&ClientMetadata {
-            client_name: Some(Localized::new("meteorite".to_owned(), [])),
+            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
             // TODO: possibly add policy and tos uri?
             policy_uri: None,
             tos_uri: None,
