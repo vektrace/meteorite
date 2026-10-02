@@ -33,7 +33,6 @@ pub fn LoginScreen() -> Element {
     let password = use_signal(String::new);
 
     let mut error = use_signal(|| Option::<String>::None);
-    let mut sso_link = use_signal(|| Option::<String>::None);
     let mut is_busy = use_signal(|| false);
     let mut current_task = use_signal(|| Option::<dioxus_core::Task>::None);
 
@@ -116,51 +115,6 @@ pub fn LoginScreen() -> Element {
         current_task.set(Some(task));
     };
 
-    let start_sso_login = move |_| {
-        if is_busy() {
-            return;
-        }
-
-        cancel_active_task();
-
-        error.set(None);
-        is_busy.set(true);
-
-        let hs = homeserver.read().clone();
-
-        let task = spawn(async move {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-            let mut handle = tokio::spawn(auth::login_sso(hs, tx));
-
-            loop {
-                tokio::select! {
-                    Some(link) = rx.recv() => {
-                        sso_link.set(Some(link));
-                    }
-                    res = &mut handle => {
-                        match res {
-                            Ok(Ok(c)) => {
-                                *CLIENT.write() = Some(c);
-                            }
-                            Ok(Err(e)) => {
-                                error.set(Some(e.to_string()));
-                            }
-                            Err(_) => {
-                                // *should* not happen
-                                error.set(Some("Authentication process aborted".into()));
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
-            is_busy.set(false);
-        });
-        current_task.set(Some(task));
-    };
-
     let start_username_login = move |_| {
         if is_busy() {
             return;
@@ -219,12 +173,6 @@ pub fn LoginScreen() -> Element {
                         class: "absolute inset-0 z-40 bg-black/40 flex flex-col items-center justify-center gap-4 backdrop-blur-sm",
                         components::Spinner {
                             size: "h-[50px] w-[50px]",
-                        }
-                        if let Some(link) = sso_link() {
-                            div {
-                                class: "p-3 bg-neutral-900 border border-neutral-700 rounded-lg text-white text-sm shadow-xl animate-fade-in",
-                                "{link}"
-                            }
                         }
                     }
                 }
@@ -293,7 +241,6 @@ pub fn LoginScreen() -> Element {
                                         onclick: move |_| {
                                             cancel_active_task();
                                             is_busy.set(false);
-                                            sso_link.set(None);
                                         },
                                         "Cancel"
                                     }
@@ -344,17 +291,6 @@ pub fn LoginScreen() -> Element {
                                     }
                                 }
 
-                                if let Some(choices) = &*login_choices.read()
-                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Sso {identity_providers: _ }))
-                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true }))
-                                {
-                                    button {
-                                        class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
-                                        onclick: start_sso_login,
-                                        "Login with Homeserver"
-                                    }
-                                }
-
                                 if !is_busy() {
                                     button {
                                         class: "w-full py-2 bg-transparent hover:bg-neutral-700/50 rounded-lg text-neutral-400 text-sm transition-colors cursor-pointer",
@@ -373,7 +309,6 @@ pub fn LoginScreen() -> Element {
                                         onclick: move |_| {
                                             cancel_active_task();
                                             is_busy.set(false);
-                                            sso_link.set(None);
                                         },
                                         "Cancel"
                                     }

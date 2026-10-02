@@ -27,10 +27,7 @@ use matrix_sdk::{
     Client, RefreshTokenError, SessionChange,
     ruma::{
         OwnedUserId,
-        api::{
-            client::session::get_login_types::v3::{IdentityProvider, LoginType},
-            error::ErrorKind,
-        },
+        api::{client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
@@ -113,11 +110,6 @@ const ALL: u8 = USER | FILE | FOLDER | KEYRING;
 pub enum LoginChoice {
     /// Password login
     Password,
-    /// SSO login
-    Sso {
-        /// The identity providers (e.g. Github)
-        identity_providers: Vec<IdentityProvider>,
-    },
     /// OAuth 2.0 login
     Oauth {
         /// Wether the client should ignore all other methods and only advertise OAuth
@@ -127,8 +119,8 @@ pub enum LoginChoice {
 
 /// Retrieves all supported login types for a given homeserver.
 ///
-/// Returns an empty list if no compatible login methods (like Password,
-/// SSO, or OAuth) are discovered. The UI must handle this fallback.
+/// Returns an empty list if no compatible login methods (like Password
+/// or OAuth) are discovered. The UI must handle this fallback.
 ///
 /// # Errors
 /// An error will be returned if connecting to the homeserver or any requests fail.
@@ -158,22 +150,15 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
         types.push(LoginChoice::Password);
     }
 
+    // sso is unsupported
     if let Some(sso) = login_types.iter().find_map(|t| match t {
         LoginType::Sso(sso) => Some(sso),
         _ => None,
-    }) {
-        if oauth_supported {
-            types.push(LoginChoice::Oauth {
-                preferred: sso.oauth_aware_preferred,
-            })
-        }
-
-        // also check for `LoginType::Token`, if it is unsupported, login_token will fail
-        if login_types.iter().any(|t| matches!(t, LoginType::Token(_))) {
-            types.push(LoginChoice::Sso {
-                identity_providers: sso.identity_providers.clone(),
-            });
-        }
+    }) && oauth_supported
+    {
+        types.push(LoginChoice::Oauth {
+            preferred: sso.oauth_aware_preferred,
+        })
     }
 
     // ui has to handle empty types
@@ -486,68 +471,6 @@ pub mod oauth {
 
         Ok(client)
     }
-}
-
-// WARNING: deprecated (soon)
-/// Tries to log a user in via their homeserver.
-///
-/// Also saves the new data (users.toml, encrypted file, keyring entry)
-/// On success, an authenticated Client is returned.
-pub async fn login_sso(
-    homeserver: String,
-    tx: mpsc::UnboundedSender<String>,
-) -> anyhow::Result<Client> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
-
-    // initialize rng for later usage
-    let (id, encryption_passphrase) = generate_account_credentials();
-
-    // define the paths once
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-    let sqlite_path = account_path.join(&id);
-
-    tokio::fs::create_dir_all(&account_path).await?;
-
-    // construct the client
-    let client = Client::builder()
-        .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
-        .build()
-        .await?;
-
-    // start sso login
-    let response = client
-        .matrix_auth()
-        .login_sso(|sso_url| async move {
-            if webbrowser::open(&sso_url).is_ok() {
-                tx.send("Go to the opened website to authenticate".to_string())
-                    .ok();
-            } else {
-                tx.send(format!("Navigate to {sso_url} in a browser of choice"))
-                    .ok();
-            }
-            Ok(())
-        })
-        .initial_device_display_name(&utils::unwrap_lock(&INITIAL_DEVICE_NAME))
-        .request_refresh_token()
-        .await?;
-
-    // construct new secure account data from response
-    let secure_data = SecureAccountData::new(
-        response.access_token,
-        response.refresh_token,
-        response.device_id,
-        None,
-    );
-
-    tokio::task::spawn_blocking(move || {
-        save_new_account(&id, response.user_id, &secure_data, &encryption_passphrase)
-    })
-    .await??;
-
-    Ok(client)
 }
 
 fn remove_orphaned_accounts() {
