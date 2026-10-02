@@ -360,6 +360,105 @@ pub async fn login_username(
     Ok(client)
 }
 
+pub mod oauth {
+    use matrix_sdk::{
+        authentication::oauth::{
+            OAuthAuthorizationData,
+            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+        },
+        reqwest::Url,
+        ruma::serde::Raw,
+        utils::local_server::LocalServerBuilder,
+    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    // TODO: call abort_login on cancellation
+
+    /// Tries to log a user in via the OAuth Authorization Code flow.
+    ///
+    /// Also saves the new data (users.toml, encrypted file, keyring entry)
+    /// On success, an authenticated Client is returned.
+    pub async fn login(homeserver: String) -> anyhow::Result<Client> {
+        remove_orphaned_accounts();
+
+        let (id, encryption_passphrase) = generate_account_credentials();
+
+        let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+        let sqlite_path = account_path.join(&id);
+
+        tokio::fs::create_dir_all(&account_path).await?;
+
+        // construct the client
+        let client = Client::builder()
+            .server_name_or_homeserver_url(homeserver)
+            .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+            .build()
+            .await?;
+
+        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
+            .expect("Couldn't parse IPv4 redirect URI");
+        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
+            .expect("Couldn't parse IPv6 redirect URI");
+        let client_uri = Localized::new(
+            // maybe one day we will get meteorite its own website...
+            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
+            None,
+        );
+
+        let metadata = Raw::new(&ClientMetadata {
+            client_name: Some(Localized::new("meteorite".to_owned(), [])),
+            // TODO: possibly add policy and tos uri?
+            policy_uri: None,
+            tos_uri: None,
+            ..ClientMetadata::new(
+                ApplicationType::Native,
+                vec![
+                    OAuthGrantType::AuthorizationCode {
+                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
+                    },
+                    OAuthGrantType::DeviceCode,
+                ],
+                client_uri,
+            )
+        })?;
+
+        let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
+
+        let OAuthAuthorizationData { url, .. } = client
+            .oauth()
+            .login(redirect_uri, None, Some(metadata.into()), None)
+            .build()
+            .await?;
+
+        let query_string = {
+            // TODO: send text to ui
+            println!("Navigate to {url} in a browser of choice");
+
+            server_handle.await
+        };
+
+        let Some(query_string) = query_string else {
+            anyhow::bail!(
+                "Error: failed to login: missing query string on the redirect URL\nPlease try again"
+            );
+        };
+
+        match client.oauth().finish_login(query_string.into()).await {
+            Ok(()) => {
+                // TODO: save new account data
+            }
+            Err(err) => {
+                anyhow::bail!("Error: failed to login: {err}");
+            }
+        }
+
+        Ok(client)
+    }
+}
+
 // WARNING: deprecated (soon)
 /// Tries to log a user in via their homeserver.
 ///
