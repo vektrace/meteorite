@@ -448,7 +448,28 @@ pub mod oauth {
 
         match client.oauth().finish_login(query_string.into()).await {
             Ok(()) => {
-                // TODO: save new account data
+                let session = client
+                    .oauth()
+                    .full_session()
+                    .expect("Client should be logged in");
+
+                // construct new secure account data from response
+                let secure_data = SecureAccountData::new(
+                    session.user.tokens.access_token,
+                    session.user.tokens.refresh_token,
+                    session.user.meta.device_id,
+                    Some(session.client_id),
+                );
+
+                tokio::task::spawn_blocking(move || {
+                    save_new_account(
+                        &id,
+                        session.user.meta.user_id,
+                        &secure_data,
+                        &encryption_passphrase,
+                    )
+                })
+                .await??;
             }
             Err(err) => {
                 anyhow::bail!("Error: failed to login: {err}");
