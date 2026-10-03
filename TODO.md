@@ -7,7 +7,6 @@
     - [x] Authorization Code
     - [ ] QR Code
   - [x] Username
-- [ ] Remove SSO login (will be deprecated, does not need to be removed right now)
 - [ ] Device verification (Emoji & QR)
 - [ ] Sending & receiving messages
 - [ ] Multi-Account
