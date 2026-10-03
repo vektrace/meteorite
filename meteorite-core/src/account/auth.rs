@@ -348,7 +348,7 @@ pub async fn login_username(
 pub mod oauth {
     use matrix_sdk::{
         authentication::oauth::{
-            OAuthAuthorizationData,
+            CsrfToken, OAuthAuthorizationData,
             registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
         },
         reqwest::Url,
@@ -359,7 +359,33 @@ pub mod oauth {
 
     use super::*;
 
-    // TODO: call abort_login on cancellation
+    struct OAuthLoginGuard {
+        client: Option<Client>,
+        state: Option<CsrfToken>,
+    }
+
+    impl OAuthLoginGuard {
+        fn new(client: Client) -> Self {
+            Self {
+                client: Some(client),
+                state: None,
+            }
+        }
+
+        fn arm(&mut self, data: &OAuthAuthorizationData) {
+            self.state = Some(data.state.clone());
+        }
+    }
+
+    impl Drop for OAuthLoginGuard {
+        fn drop(&mut self) {
+            if let (Some(client), Some(state)) = (self.client.take(), self.state.take())
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                handle.spawn(async move { client.oauth().abort_login(&state).await });
+            }
+        }
+    }
 
     /// Tries to log a user in via the OAuth Authorization Code flow.
     ///
@@ -415,18 +441,21 @@ pub mod oauth {
 
         let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
 
-        let OAuthAuthorizationData { url, .. } = client
+        let mut guard = OAuthLoginGuard::new(client.clone());
+
+        let data = client
             .oauth()
             .login(redirect_uri, None, Some(metadata.into()), None)
             .build()
             .await?;
+        guard.arm(&data);
 
         let query_string = {
-            if webbrowser::open(url.as_str()).is_ok() {
+            if webbrowser::open(data.url.as_str()).is_ok() {
                 tx.send("Go to the opened website to authenticate".to_string())
                     .ok();
             } else {
-                tx.send(format!("Navigate to {url} in a browser of choice"))
+                tx.send(format!("Navigate to {} in a browser of choice", data.url))
                     .ok();
             }
 
@@ -434,40 +463,38 @@ pub mod oauth {
         };
 
         let Some(query_string) = query_string else {
+            client.oauth().abort_login(&data.state).await;
             anyhow::bail!(
                 "Error: failed to login: missing query string on the redirect URL\nPlease try again"
             );
         };
 
-        match client.oauth().finish_login(query_string.into()).await {
-            Ok(()) => {
-                let session = client
-                    .oauth()
-                    .full_session()
-                    .expect("Client should be logged in");
-
-                // construct new secure account data from response
-                let secure_data = SecureAccountData::new(
-                    session.user.tokens.access_token,
-                    session.user.tokens.refresh_token,
-                    session.user.meta.device_id,
-                    Some(session.client_id),
-                );
-
-                tokio::task::spawn_blocking(move || {
-                    save_new_account(
-                        &id,
-                        session.user.meta.user_id,
-                        &secure_data,
-                        &encryption_passphrase,
-                    )
-                })
-                .await??;
-            }
-            Err(err) => {
-                anyhow::bail!("Error: failed to login: {err}");
-            }
+        if let Err(err) = client.oauth().finish_login(query_string.into()).await {
+            anyhow::bail!("Error: failed to login: {err}");
         }
+
+        let session = client
+            .oauth()
+            .full_session()
+            .expect("Client should be logged in");
+
+        // construct new secure account data from response
+        let secure_data = SecureAccountData::new(
+            session.user.tokens.access_token,
+            session.user.tokens.refresh_token,
+            session.user.meta.device_id,
+            Some(session.client_id),
+        );
+
+        tokio::task::spawn_blocking(move || {
+            save_new_account(
+                &id,
+                session.user.meta.user_id,
+                &secure_data,
+                &encryption_passphrase,
+            )
+        })
+        .await??;
 
         Ok(client)
     }
