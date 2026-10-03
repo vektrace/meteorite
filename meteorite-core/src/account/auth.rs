@@ -345,6 +345,161 @@ pub async fn login_username(
     Ok(client)
 }
 
+pub mod oauth {
+    use matrix_sdk::{
+        authentication::oauth::{
+            CsrfToken, OAuthAuthorizationData,
+            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+        },
+        reqwest::Url,
+        ruma::serde::Raw,
+        utils::local_server::LocalServerBuilder,
+    };
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    struct OAuthLoginGuard {
+        client: Option<Client>,
+        state: Option<CsrfToken>,
+    }
+
+    impl OAuthLoginGuard {
+        fn new(client: Client) -> Self {
+            Self {
+                client: Some(client),
+                state: None,
+            }
+        }
+
+        fn arm(&mut self, data: &OAuthAuthorizationData) {
+            self.state = Some(data.state.clone());
+        }
+    }
+
+    impl Drop for OAuthLoginGuard {
+        fn drop(&mut self) {
+            if let (Some(client), Some(state)) = (self.client.take(), self.state.take())
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                handle.spawn(async move { client.oauth().abort_login(&state).await });
+            }
+        }
+    }
+
+    /// Tries to log a user in via the OAuth Authorization Code flow.
+    ///
+    /// Also saves the new data (users.toml, encrypted file, keyring entry)
+    /// On success, an authenticated Client is returned.
+    pub async fn login(
+        homeserver: String,
+        tx: mpsc::UnboundedSender<String>,
+    ) -> anyhow::Result<Client> {
+        remove_orphaned_accounts();
+
+        let (id, encryption_passphrase) = generate_account_credentials();
+
+        let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+        let sqlite_path = account_path.join(&id);
+
+        tokio::fs::create_dir_all(&account_path).await?;
+
+        // construct the client
+        let client = Client::builder()
+            .server_name_or_homeserver_url(homeserver)
+            .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+            .build()
+            .await?;
+
+        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
+            .expect("Couldn't parse IPv4 redirect URI");
+        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
+            .expect("Couldn't parse IPv6 redirect URI");
+        let client_uri = Localized::new(
+            // maybe one day we will get meteorite its own website...
+            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
+            None,
+        );
+
+        let metadata = Raw::new(&ClientMetadata {
+            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
+            // TODO: possibly add policy and tos uri?
+            policy_uri: None,
+            tos_uri: None,
+            ..ClientMetadata::new(
+                ApplicationType::Native,
+                vec![
+                    OAuthGrantType::AuthorizationCode {
+                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
+                    },
+                    OAuthGrantType::DeviceCode,
+                ],
+                client_uri,
+            )
+        })?;
+
+        let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
+
+        let mut guard = OAuthLoginGuard::new(client.clone());
+
+        let data = client
+            .oauth()
+            .login(redirect_uri, None, Some(metadata.into()), None)
+            .build()
+            .await?;
+        guard.arm(&data);
+
+        let query_string = {
+            if webbrowser::open(data.url.as_str()).is_ok() {
+                tx.send("Go to the opened website to authenticate".to_string())
+                    .ok();
+            } else {
+                tx.send(format!("Navigate to {} in a browser of choice", data.url))
+                    .ok();
+            }
+
+            server_handle.await
+        };
+
+        let Some(query_string) = query_string else {
+            client.oauth().abort_login(&data.state).await;
+            anyhow::bail!(
+                "Error: failed to login: missing query string on the redirect URL\nPlease try again"
+            );
+        };
+
+        if let Err(err) = client.oauth().finish_login(query_string.into()).await {
+            anyhow::bail!("Error: failed to login: {err}");
+        }
+
+        let session = client
+            .oauth()
+            .full_session()
+            .expect("Client should be logged in");
+
+        // construct new secure account data from response
+        let secure_data = SecureAccountData::new(
+            session.user.tokens.access_token,
+            session.user.tokens.refresh_token,
+            session.user.meta.device_id,
+            Some(session.client_id),
+        );
+
+        tokio::task::spawn_blocking(move || {
+            save_new_account(
+                &id,
+                session.user.meta.user_id,
+                &secure_data,
+                &encryption_passphrase,
+            )
+        })
+        .await??;
+
+        Ok(client)
+    }
+}
+
 fn remove_orphaned_accounts() {
     let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
     let users_path = account_path.join("users.toml");

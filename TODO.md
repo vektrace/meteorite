@@ -4,7 +4,7 @@
 - [ ] Login
   - [x] SSO
   - [ ] OAuth
-    - [ ] Authorization Code
+    - [x] Authorization Code
     - [ ] QR Code
   - [x] Username
 - [ ] Remove SSO login (will be deprecated, does not need to be removed right now)
@@ -22,6 +22,8 @@
 - [ ] Code-sign application for Apple (IMPORTANT) and Windows
 - [ ] Translations (weblate)
 - [ ] proper-er error handling for loading screen login
+- [ ] return device id on no available refresh token/soft logout (meteorite-core/src/account/auth.rs)
+- [ ] possibly add policy/tos uri and purchase new domain???
 
 - TODOs in files:
   - UI
