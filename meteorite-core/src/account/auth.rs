@@ -26,14 +26,14 @@ use keyring_core::Entry;
 use matrix_sdk::{
     Client, RefreshTokenError, SessionChange,
     ruma::{
-        OwnedUserId,
+        OwnedDeviceId, OwnedUserId,
         api::{client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
 use std::{fs, path::Path, path::PathBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 // The files in this folder contain all functions for authenticating a user. That includes loading necessary
 // config files, getting passwords from keyring and using matrix sdks functions to send requests to
@@ -176,9 +176,18 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
 /// user should be:
 /// 1. prompted to switch account
 /// 2. brought back to the login screen.
-pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Error>) {
+///
+/// Returns the `OwnedDeviceId` of the discarded session if soft-logout could not be recovered (no
+/// usable refresh token), so the user can be logged back in with the same device id instead of
+/// creating a new one.
+pub async fn handle_refresh_tokens(
+    client: Client,
+    tx: mpsc::Sender<anyhow::Error>,
+) -> Option<OwnedDeviceId> {
     let client = client.clone();
     let mut session_change_stream = client.subscribe_to_session_changes();
+
+    let (done_tx, done_rx) = oneshot::channel();
 
     tokio::spawn(async move {
         while let Ok(change) = session_change_stream.recv().await {
@@ -207,7 +216,6 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                         }
                         Err(err) => {
                             // check for another soft logout/no available refresh token (exchange device id for new access token)
-                            // TODO: send back device id as well (to not create a new one)
                             match err {
                                 RefreshTokenError::RefreshTokenRequired => {}
                                 RefreshTokenError::MatrixAuth(http_error)
@@ -227,6 +235,13 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                                     .expect("Client should be authenticated")
                                     .as_str(),
                             );
+
+                            let _ = done_tx.send(Some(
+                                client
+                                    .device_id()
+                                    .expect("Client should be authenticated")
+                                    .into(),
+                            ));
                             return;
                         }
                     }
@@ -238,11 +253,15 @@ pub async fn handle_refresh_tokens(client: Client, tx: mpsc::Sender<anyhow::Erro
                             .expect("Client should be authenticated")
                             .as_str(),
                     );
+
+                    let _ = done_tx.send(None);
                     return;
                 }
             }
         }
     });
+
+    done_rx.await.ok().flatten()
 }
 
 /// Tries to log the user into the currently active account.
@@ -294,12 +313,15 @@ pub async fn login() -> anyhow::Result<Option<Client>> {
 
 /// Tries to log a user in with the provided homeserver, username and password.
 ///
+/// If a device id is provided, it will be used instead of creating a new one.
+///
 /// Also saves the new data (users.toml, encrypted file, keyring entry)
 /// On success, an authenticated Client is returned.
 pub async fn login_username(
     homeserver: String,
     username: String,
     password: String,
+    device_id: Option<OwnedDeviceId>,
 ) -> anyhow::Result<Client> {
     // first remove possible leftovers
     remove_orphaned_accounts();
@@ -321,13 +343,18 @@ pub async fn login_username(
         .build()
         .await?;
 
-    // start login
-    let response = client
+    let mut login_builder = client
         .matrix_auth()
         .login_username(&username, &password)
         .initial_device_display_name(&utils::unwrap_lock(&INITIAL_DEVICE_NAME))
-        .request_refresh_token()
-        .await?;
+        .request_refresh_token();
+
+    if let Some(device_id) = device_id {
+        login_builder = login_builder.device_id(device_id.as_str());
+    }
+
+    // start login
+    let response = login_builder.await?;
 
     // construct new secure account data from response
     let secure_data = SecureAccountData::new(
@@ -393,6 +420,7 @@ pub mod oauth {
     /// On success, an authenticated Client is returned.
     pub async fn login(
         homeserver: String,
+        device_id: Option<OwnedDeviceId>,
         tx: mpsc::UnboundedSender<String>,
     ) -> anyhow::Result<Client> {
         remove_orphaned_accounts();
@@ -445,7 +473,7 @@ pub mod oauth {
 
         let data = client
             .oauth()
-            .login(redirect_uri, None, Some(metadata.into()), None)
+            .login(redirect_uri, device_id, Some(metadata.into()), None)
             .build()
             .await?;
         guard.arm(&data);
