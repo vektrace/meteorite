@@ -282,6 +282,7 @@ pub fn LoginScreen() -> Element {
                                         class: "w-full py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors cursor-pointer",
                                         onclick: move |_| {
                                             error.set(None);
+                                            login_choices.set(None);
                                             if homeserver.read().is_empty() {
                                                 show_validation_errors.set(true);
                                             } else {
@@ -364,7 +365,6 @@ pub fn LoginScreen() -> Element {
                                         onclick: move |_| {
                                             error.set(None);
                                             show_validation_errors.set(false);
-                                            login_choices.set(None);
                                             current_stage.set(LoginStage::Homeserver);
                                         },
                                         "Back"
