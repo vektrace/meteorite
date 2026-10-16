@@ -19,7 +19,7 @@
 - [ ] hook up handle_refresh_token function to ui/somewhere else
 - [ ] Code-sign application for Apple (IMPORTANT) and Windows
 - [ ] Translations (weblate)
-- [ ] proper-er error handling for loading screen login
+- [ ] proper-er error handling
 - [ ] possibly add policy/tos uri and purchase new domain???
 
 - TODOs in files:
