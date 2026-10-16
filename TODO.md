@@ -1,11 +1,10 @@
 # TODO
 
 - [ ] Registration
-- [ ] Login
-  - [x] SSO
-  - [ ] OAuth
+- [x] Login
+  - [x] OAuth
     - [x] Authorization Code
-    - [ ] QR Code
+    - [x] QR Code
   - [x] Username
 - [ ] Device verification (Emoji & QR)
 - [ ] Sending & receiving messages
