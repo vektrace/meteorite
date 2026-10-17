@@ -762,7 +762,7 @@ pub mod oauth {
 
             let login_client = oauth
                 .login_with_qr_code(Some(&metadata))
-                .scan(QrCodeData::from_bytes(&decoded));
+                .scan(&QrCodeData::from_bytes(&decoded)?);
             let mut subscriber = login_client.subscribe_to_progress();
 
             let task = tokio::spawn(async move {
