@@ -150,14 +150,18 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
         types.push(LoginChoice::Password);
     }
 
-    // sso is unsupported
-    if let Some(sso) = login_types.iter().find_map(|t| match t {
-        LoginType::Sso(sso) => Some(sso),
-        _ => None,
-    }) && oauth_supported
-    {
+    if oauth_supported {
+        let preferred = login_types
+            .iter()
+            .find_map(|t| match t {
+                LoginType::Sso(sso) => Some(sso.oauth_aware_preferred),
+                _ => None,
+            })
+            .unwrap_or(false);
+
         types.push(LoginChoice::Oauth {
-            preferred: sso.oauth_aware_preferred,
+            preferred,
+            supports_msc4108,
         })
     }
 
