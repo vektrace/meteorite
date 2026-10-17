@@ -27,7 +27,7 @@ use matrix_sdk::{
     Client, RefreshTokenError, SessionChange,
     ruma::{
         OwnedDeviceId, OwnedUserId,
-        api::{client::session::get_login_types::v3::LoginType, error::ErrorKind},
+        api::{FeatureFlag, client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
@@ -114,6 +114,8 @@ pub enum LoginChoice {
     Oauth {
         /// Wether the client should ignore all other methods and only advertise OAuth
         preferred: bool,
+        /// Whether the client supports logging in with a QR Code
+        supports_msc4108: bool,
     },
 }
 
@@ -142,6 +144,11 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
     } else {
         true
     };
+
+    let supports_msc4108 = client
+        .unstable_features()
+        .await?
+        .contains(&FeatureFlag::Msc4108);
 
     if login_types
         .iter()
@@ -418,6 +425,35 @@ pub mod oauth {
         }
     }
 
+    fn metadata() -> ClientMetadata {
+        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
+            .expect("Couldn't parse IPv4 redirect URI");
+        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
+            .expect("Couldn't parse IPv6 redirect URI");
+        let client_uri = Localized::new(
+            // maybe one day we will get meteorite its own website...
+            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
+            None,
+        );
+
+        ClientMetadata {
+            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
+            // TODO: possibly add policy and tos uri?
+            policy_uri: None,
+            tos_uri: None,
+            ..ClientMetadata::new(
+                ApplicationType::Native,
+                vec![
+                    OAuthGrantType::AuthorizationCode {
+                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
+                    },
+                    OAuthGrantType::DeviceCode,
+                ],
+                client_uri,
+            )
+        }
+    }
+
     /// Tries to log a user in via the OAuth Authorization Code flow.
     ///
     /// Also saves the new data (users.toml, encrypted file, keyring entry)
@@ -444,32 +480,7 @@ pub mod oauth {
             .build()
             .await?;
 
-        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
-            .expect("Couldn't parse IPv4 redirect URI");
-        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
-            .expect("Couldn't parse IPv6 redirect URI");
-        let client_uri = Localized::new(
-            // maybe one day we will get meteorite its own website...
-            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
-            None,
-        );
-
-        let metadata = Raw::new(&ClientMetadata {
-            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
-            // TODO: possibly add policy and tos uri?
-            policy_uri: None,
-            tos_uri: None,
-            ..ClientMetadata::new(
-                ApplicationType::Native,
-                vec![
-                    OAuthGrantType::AuthorizationCode {
-                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
-                    },
-                    OAuthGrantType::DeviceCode,
-                ],
-                client_uri,
-            )
-        })?;
+        let metadata = Raw::new(&metadata())?;
 
         let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
 
@@ -529,6 +540,276 @@ pub mod oauth {
         .await??;
 
         Ok(client)
+    }
+
+    pub mod qr {
+        use matrix_sdk::authentication::oauth::qrcode::{
+            GeneratedQrProgress, LoginProgress, SenderError,
+        };
+        use matrix_sdk::stream::StreamExt;
+
+        use super::*;
+
+        pub enum GeneratedQrState {
+            /// Waiting for the QR code to be scanned with QR code data attached
+            WaitingForScan(String),
+            /// Waiting for check code to be transmitted
+            WaitingForCheckCode,
+            /// Waiting for access token, code attached which other device might ask for
+            WaitingForToken(String),
+        }
+
+        /// Tries to log a user in by letting an authenticated device scan a QR code.
+        ///
+        /// Note that a custom device ID is not supported, so an existing one cannot be reused.
+        ///
+        /// The transmitter is used to transmit general instructions for the UI to display.
+        /// The receiver is used to get the check code when needed.
+        ///
+        /// Also saves the new data (users.toml, encrypted file, keyring entry)
+        /// On success, an authenticated Client is returned.
+        pub async fn display(
+            homeserver: String,
+            tx: mpsc::UnboundedSender<GeneratedQrState>,
+            mut rx: mpsc::UnboundedReceiver<u8>,
+        ) -> anyhow::Result<Client> {
+            use qrcode_generator::{Renderer, qr::Encoder};
+
+            remove_orphaned_accounts();
+
+            let (id, encryption_passphrase) = generate_account_credentials();
+
+            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+            let sqlite_path = account_path.join(&id);
+
+            tokio::fs::create_dir_all(&account_path).await?;
+
+            // construct the client
+            let client = Client::builder()
+                .server_name_or_homeserver_url(homeserver)
+                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .build()
+                .await?;
+
+            let metadata = Raw::new(&metadata())?.into();
+            let oauth = client.oauth();
+            let login_client = oauth.login_with_qr_code(Some(&metadata)).generate();
+            let mut subscriber = login_client.subscribe_to_progress();
+
+            let task = tokio::spawn(async move {
+                while let Some(state) = subscriber.next().await {
+                    match state {
+                        LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
+                        LoginProgress::EstablishingSecureChannel(GeneratedQrProgress::QrReady(
+                            data,
+                        )) => {
+                            let symbol = Encoder::new(qrcode_generator::qr::ErrorCorrection::Low)
+                                .encode_bytes(data.to_bytes())
+                                .unwrap();
+
+                            let data = Renderer::new(&symbol, 256)
+                                .quiet_zone(0)
+                                .svg_xml_declaration(false)
+                                .to_svg_string(None::<String>)
+                                .unwrap();
+
+                            tx.send(GeneratedQrState::WaitingForScan(data)).ok();
+                        }
+                        LoginProgress::EstablishingSecureChannel(
+                            GeneratedQrProgress::QrScanned(sender),
+                        ) => {
+                            tx.send(GeneratedQrState::WaitingForCheckCode).ok();
+                            let Some(check_code) = rx.recv().await else {
+                                // Login cancelled or something else happened
+                                break;
+                            };
+
+                            match sender.send(check_code).await {
+                                Ok(()) | Err(SenderError::AlreadySent) => {}
+                                Err(SenderError::CannotSend) => {}
+                            }
+                        }
+                        LoginProgress::WaitingForToken { user_code } => {
+                            tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
+                        }
+                        LoginProgress::Done => break,
+                    }
+                }
+            });
+
+            let result = login_client.await;
+            task.abort();
+
+            result?;
+
+            let session = client
+                .oauth()
+                .full_session()
+                .expect("Client should be logged in");
+
+            // construct new secure account data from response
+            let secure_data = SecureAccountData::new(
+                session.user.tokens.access_token,
+                session.user.tokens.refresh_token,
+                session.user.meta.device_id,
+                Some(session.client_id),
+            );
+
+            tokio::task::spawn_blocking(move || {
+                save_new_account(
+                    &id,
+                    session.user.meta.user_id,
+                    &secure_data,
+                    &encryption_passphrase,
+                )
+            })
+            .await??;
+
+            Ok(client)
+        }
+
+        pub enum QrState {
+            /// Input attached check code on other device
+            InputCheckCode(u8),
+            /// Waiting for access token, code attached which other device might ask for
+            WaitingForToken(String),
+        }
+
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        /// Tries to log a user in by scanning a QR code.
+        ///
+        /// Note that a custom device ID is not supported, so an existing one cannot be reused.
+        ///
+        /// Also saves the new data (users.toml, encrypted file, keyring entry)
+        /// On success, an authenticated Client is returned.
+        pub async fn scan(
+            homeserver: String,
+            tx: mpsc::UnboundedSender<QrState>,
+        ) -> anyhow::Result<Client> {
+            use camera::{
+                CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
+            };
+            use image::{DynamicImage, RgbImage};
+            use matrix_sdk::authentication::oauth::qrcode::{QrCodeData, QrProgress};
+
+            remove_orphaned_accounts();
+
+            let (id, encryption_passphrase) = generate_account_credentials();
+
+            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+            let sqlite_path = account_path.join(&id);
+
+            tokio::fs::create_dir_all(&account_path).await?;
+
+            // construct the client
+            let client = Client::builder()
+                .server_name_or_homeserver_url(homeserver)
+                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .build()
+                .await?;
+
+            let metadata = Raw::new(&metadata())?.into();
+            let oauth = client.oauth();
+
+            let system = CameraSystem::new();
+            let mut capture = system
+                .capture(DeviceSelector::Default)
+                .profile(CaptureProfile::Preview)
+                .start()
+                .await?;
+
+            let decoded = loop {
+                let Ok(frame) = capture.next_frame().await else {
+                    // maybe more luck on the next frame?
+                    continue;
+                };
+
+                let layout = frame.layout();
+                let width = layout.width;
+                let height = layout.height;
+
+                // convert to rgb before converting to grayscale
+                let request = ConversionRequest::for_layout(layout);
+                let mut rgb_data = vec![0; request.output_len().unwrap()];
+
+                let mut converter = RgbConverter::new();
+                converter
+                    .convert_into(&frame, request, &mut rgb_data)
+                    .unwrap();
+
+                let rgb_image = RgbImage::from_raw(width, height, rgb_data).unwrap();
+                let img = DynamicImage::ImageRgb8(rgb_image).into_luma8();
+
+                let mut decoder = quircs::Quirc::default();
+
+                let mut codes = decoder.identify(img.width() as usize, img.height() as usize, &img);
+
+                let decoded = codes.find_map(|c| {
+                    let c = c.ok()?;
+
+                    c.decode().ok()
+                });
+
+                if let Some(decoded) = decoded {
+                    break decoded.payload;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            };
+
+            capture.close().await.unwrap();
+
+            let qr_data = QrCodeData::from_bytes(&decoded)?;
+            let login_client = oauth.login_with_qr_code(Some(&metadata)).scan(&qr_data);
+            let mut subscriber = login_client.subscribe_to_progress();
+
+            let task = tokio::spawn(async move {
+                while let Some(state) = subscriber.next().await {
+                    match state {
+                        LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
+                        LoginProgress::EstablishingSecureChannel(QrProgress { check_code }) => {
+                            tx.send(QrState::InputCheckCode(check_code)).ok();
+                        }
+                        LoginProgress::WaitingForToken { user_code } => {
+                            tx.send(QrState::WaitingForToken(user_code)).ok();
+                        }
+                        LoginProgress::Done => break,
+                    }
+                }
+            });
+
+            let result = login_client.await;
+            task.abort();
+
+            result?;
+
+            let session = client
+                .oauth()
+                .full_session()
+                .expect("Client should be logged in");
+
+            // construct new secure account data from response
+            let secure_data = SecureAccountData::new(
+                session.user.tokens.access_token,
+                session.user.tokens.refresh_token,
+                session.user.meta.device_id,
+                Some(session.client_id),
+            );
+
+            tokio::task::spawn_blocking(move || {
+                save_new_account(
+                    &id,
+                    session.user.meta.user_id,
+                    &secure_data,
+                    &encryption_passphrase,
+                )
+            })
+            .await??;
+
+            Ok(client)
+        }
     }
 }
 

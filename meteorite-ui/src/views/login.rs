@@ -19,6 +19,7 @@
 use super::{CLIENT, LoginStage, components};
 use dioxus::prelude::*;
 use meteorite_core::account::auth;
+use meteorite_core::account::auth::oauth::qr::GeneratedQrState;
 
 #[component]
 pub fn LoginScreen() -> Element {
@@ -33,7 +34,13 @@ pub fn LoginScreen() -> Element {
     let password = use_signal(String::new);
 
     let mut error = use_signal(|| Option::<String>::None);
+
+    // oauth
     let mut link = use_signal(|| Option::<String>::None);
+    let mut qr_state = use_signal(|| Option::<GeneratedQrState>::None);
+    let mut check_code_tx = use_signal(|| Option::<tokio::sync::mpsc::UnboundedSender<u8>>::None);
+    let mut check_code_input = use_signal(String::new);
+
     let mut is_busy = use_signal(|| false);
     let mut current_task = use_signal(|| Option::<dioxus_core::Task>::None);
 
@@ -82,6 +89,8 @@ pub fn LoginScreen() -> Element {
         if let Some(task) = current_task.take() {
             task.cancel();
         }
+        check_code_tx.set(None);
+        qr_state.set(None);
     };
 
     let mut check_homeserver = move || {
@@ -182,26 +191,76 @@ pub fn LoginScreen() -> Element {
             loop {
                 tokio::select! {
                     Some(l) = rx.recv() => {
-                    link.set(Some(l));
-                }
+                        link.set(Some(l));
+                    }
                     res = &mut handle => {
-                    match res {
+                        match res {
                             Ok(Ok(c)) => {
                                 *CLIENT.write() = Some(c);
                             }
-                    Ok(Err(e)) => {
-                        error.set(Some(e.to_string()));
-                    }
-                    Err(_) => {
-                        // *should* not happen
-                        error.set(Some("Authentication process aborted".into()));
-                    }
+                            Ok(Err(e)) => {
+                                error.set(Some(e.to_string()));
+                            }
+                            Err(_) => {
+                                // *should* not happen
+                                error.set(Some("Authentication process aborted".into()));
+                            }
                         }
                         break;
-                }
+                    }
                 }
             }
 
+            is_busy.set(false);
+        });
+
+        current_task.set(Some(task));
+    };
+
+    let start_oauth_qr_display_login = move |_| {
+        if is_busy() {
+            return;
+        }
+
+        cancel_active_task();
+
+        is_busy.set(true);
+        error.set(None);
+
+        let hs = homeserver.read().clone();
+
+        let task = spawn(async move {
+            let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (code_tx, code_rx) = tokio::sync::mpsc::unbounded_channel();
+
+            check_code_tx.set(Some(code_tx));
+
+            let mut handle = tokio::spawn(auth::oauth::qr::display(hs, state_tx, code_rx));
+
+            loop {
+                tokio::select! {
+                    Some(state) = state_rx.recv() => {
+                        qr_state.set(Some(state));
+                    }
+                    res = &mut handle => {
+                        match res {
+                            Ok(Ok(c)) => {
+                                *CLIENT.write() = Some(c);
+                            }
+                            Ok(Err(e)) => {
+                                error.set(Some(e.to_string()));
+                            }
+                            Err(_) => {
+                                // *should* not happen
+                                error.set(Some("Authentication process aborted".into()));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            check_code_tx.set(None);
             is_busy.set(false);
         });
 
@@ -220,19 +279,102 @@ pub fn LoginScreen() -> Element {
                 }
 
                 if is_busy() {
+                    div { class: "absolute inset-0 z-30 bg-black/40 backdrop-blur-sm" }
+
                     if let Some(link) = link() {
                         div {
                             class: "absolute top-24 z-40 w-full max-w-md p-3 rounded-lg bg-neutral-900 border border-neutral-700 text-white text-center shadow-xl transition-all duration-300 animate-fade-in",
                             "{link}"
                         }
                     }
-                }
 
-                if is_busy() {
-                    div {
-                        class: "absolute inset-0 z-40 bg-black/40 flex flex-col items-center justify-center gap-4 backdrop-blur-sm",
-                        components::Spinner {
-                            size: "h-[50px] w-[50px]",
+                    if let Some(state) = qr_state.read().as_ref() {
+                        match state {
+                            GeneratedQrState::WaitingForScan(data) => {
+                                rsx! {
+                                    div {
+                                        class: "absolute top-24 z-40 w-full max-w-lg p-3 rounded-lg bg-neutral-900 border border-neutral-700 shadow-xl transition-all duration-300 animate-fade-in",
+                                        p {
+                                            class: "text-white text-xl text-center font-medium mb-4",
+                                            "Scan the QR code with an authenticated device"
+                                        }
+                                        div {
+                                            class: "flex justify-center items-center z-40 w-fit mx-auto bg-white p-4 rounded-md [&>svg]:block [&>svg]:w-auto [&>svg]:max-w-full [&>svg]:h-auto ",
+                                            dangerous_inner_html: "{data}"
+                                        }
+                                    }
+                                }
+                            },
+                            GeneratedQrState::WaitingForCheckCode => rsx! {
+                                div {
+                                    class: "absolute top-24 z-40 w-full max-w-lg p-3 rounded-lg bg-neutral-900 border border-neutral-700 shadow-xl transition-all duration-300 animate-fade-in",
+                                    p {
+                                        class: "text-white text-xl text-center font-medium mb-4",
+                                        "Please enter the number shown on your other device"
+                                    }
+                                    div {
+                                        class: "flex flex-col justify-center items-center gap-2",
+
+                                        input {
+                                            r#type: "text",
+                                            inputmode: "numeric",
+                                            minlength: "2",
+                                            maxlength: "2",
+                                            class: "w-3xs px-2 py-1.5 bg-neutral-900 border border-neutral-700 focus-withing:border-blue-500 rounded-md text-white text-center text-sm outline-none transition-all",
+                                            value: "{check_code_input}",
+                                            oninput: move |e| check_code_input.set(e.value()),
+                                        }
+
+                                        button {
+                                            class: "w-3xs py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors cursor-pointer",
+                                            onclick: move |_| {
+                                                let input = check_code_input.read().trim().to_owned();
+
+                                                match input.parse::<u8>() {
+                                                    Ok(code) if input.len() == 2 => {
+                                                        if let Some(tx) = check_code_tx.read().as_ref() {
+                                                            tx.send(code).ok();
+                                                            check_code_input.set(String::new());
+                                                            error.set(None);
+                                                        } else {
+                                                            error.set(Some("Login flow is no longer active".to_string()));
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        error.set(Some("Enter the number shown on your other device".to_string()));
+                                                    }
+                                                }
+                                            },
+                                            "Confirm"
+                                        }
+                                    }
+                                }
+                            },
+                            GeneratedQrState::WaitingForToken(user_code) => rsx! {
+                                div {
+                                    class: "absolute top-24 z-40 w-full max-w-lg p-3 rounded-lg bg-neutral-900 border border-neutral-700 shadow-xl transition-all duration-300 animate-fade-in",
+                                    p {
+                                        class: "text-white text-xl text-center font-medium mb-4",
+                                        "If asked, enter this code on your other device"
+                                    }
+                                    p {
+                                        class: "flex flex-wrap gap-1 justify-center",
+                                        for ch in user_code.chars() {
+                                            span {
+                                                class: "rounded-md bg-neutral-800 px-4 py-3 text-white text-base font-medium",
+                                                "{ch}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        div {
+                            class: "absolute inset-0 z-40 flex flex-col items-center justify-center gap-4",
+                            components::Spinner {
+                                size: "h-[50px] w-[50px]",
+                            }
                         }
                     }
                 }
@@ -325,7 +467,7 @@ pub fn LoginScreen() -> Element {
 
                                 if let Some(choices) = &*login_choices.read()
                                     && choices.iter().any(|c| matches!(c, auth::LoginChoice::Password))
-                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true }))
+                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true, .. }))
                                 {
                                     TextField {
                                         label: "Username",
@@ -354,14 +496,22 @@ pub fn LoginScreen() -> Element {
                                 }
 
                                 if let Some(choices) = &*login_choices.read()
-                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { preferred: _ }))
+                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { .. }))
                                 {
                                     button {
                                         class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
                                         onclick: start_oauth_login,
                                         "Continue with Homeserver"
                                     }
+                                    if choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { supports_msc4108: true, .. })) {
+                                        button {
+                                            class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
+                                            onclick: start_oauth_qr_display_login,
+                                            "Continue with QR Code"
+                                        }
+                                    }
                                 }
+
                                 if !is_busy() {
                                     button {
                                         class: "w-full py-2 bg-transparent hover:bg-neutral-700/50 rounded-lg text-neutral-400 text-sm transition-colors cursor-pointer",
