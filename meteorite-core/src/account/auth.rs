@@ -541,6 +541,134 @@ pub mod oauth {
 
         Ok(client)
     }
+
+    pub mod qr {
+        use matrix_sdk::authentication::oauth::qrcode::{
+            GeneratedQrProgress, LoginProgress, SenderError,
+        };
+        use matrix_sdk::stream::StreamExt;
+
+        use super::*;
+
+        pub enum GeneratedQrState {
+            /// Waiting for the QR code to be scanned with QR code data attached
+            WaitingForScan(String),
+            /// Waiting for check code to be transmitted
+            WaitingForCheckCode,
+            /// Waiting for access token, code attached which other device might ask for
+            WaitingForToken(String),
+        }
+
+        /// Tries to log a user in by letting an authenticated device scan a QR code.
+        ///
+        /// Note that a custom device ID is not supported, so an existing one cannot be reused.
+        ///
+        /// The transmitter is used to transmit general instructions for the UI to display.
+        /// The receiver is used to get the check code when needed.
+        ///
+        /// Also saves the new data (users.toml, encrypted file, keyring entry)
+        /// On success, an authenticated Client is returned.
+        pub async fn display(
+            homeserver: String,
+            tx: mpsc::UnboundedSender<GeneratedQrState>,
+            mut rx: mpsc::UnboundedReceiver<u8>,
+        ) -> anyhow::Result<Client> {
+            use qrcode_generator::{Renderer, qr::Encoder};
+
+            remove_orphaned_accounts();
+
+            let (id, encryption_passphrase) = generate_account_credentials();
+
+            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+            let sqlite_path = account_path.join(&id);
+
+            tokio::fs::create_dir_all(&account_path).await?;
+
+            // construct the client
+            let client = Client::builder()
+                .server_name_or_homeserver_url(homeserver)
+                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .build()
+                .await?;
+
+            let metadata = Raw::new(&metadata())?.into();
+            let oauth = client.oauth();
+            let login_client = oauth.login_with_qr_code(Some(&metadata)).generate();
+            let mut subscriber = login_client.subscribe_to_progress();
+
+            let task = tokio::spawn(async move {
+                while let Some(state) = subscriber.next().await {
+                    match state {
+                        LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
+                        LoginProgress::EstablishingSecureChannel(GeneratedQrProgress::QrReady(
+                            data,
+                        )) => {
+                            let symbol = Encoder::new(qrcode_generator::qr::ErrorCorrection::Low)
+                                .encode_bytes(data.to_bytes())
+                                .unwrap();
+
+                            let data = Renderer::new(&symbol, 256)
+                                .quiet_zone(0)
+                                .svg_xml_declaration(false)
+                                .to_svg_string(None::<String>)
+                                .unwrap();
+
+                            tx.send(GeneratedQrState::WaitingForScan(data)).ok();
+                        }
+                        LoginProgress::EstablishingSecureChannel(
+                            GeneratedQrProgress::QrScanned(sender),
+                        ) => {
+                            tx.send(GeneratedQrState::WaitingForCheckCode).ok();
+                            let Some(check_code) = rx.recv().await else {
+                                // Login cancelled or something else happened
+                                break;
+                            };
+
+                            match sender.send(check_code).await {
+                                Ok(()) | Err(SenderError::AlreadySent) => {}
+                                Err(SenderError::CannotSend) => {}
+                            }
+                        }
+                        LoginProgress::WaitingForToken { user_code } => {
+                            tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
+                        }
+                        LoginProgress::Done => break,
+                    }
+                }
+            });
+
+            let result = login_client.await;
+            task.abort();
+
+            result?;
+
+            let session = client
+                .oauth()
+                .full_session()
+                .expect("Client should be logged in");
+
+            // construct new secure account data from response
+            let secure_data = SecureAccountData::new(
+                session.user.tokens.access_token,
+                session.user.tokens.refresh_token,
+                session.user.meta.device_id,
+                Some(session.client_id),
+            );
+
+            tokio::task::spawn_blocking(move || {
+                save_new_account(
+                    &id,
+                    session.user.meta.user_id,
+                    &secure_data,
+                    &encryption_passphrase,
+                )
+            })
+            .await??;
+
+            Ok(client)
+        }
+    }
 }
 
 fn remove_orphaned_accounts() {
