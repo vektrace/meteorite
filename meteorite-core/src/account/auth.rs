@@ -745,27 +745,20 @@ pub mod oauth {
 
                 let codes = decoder.identify(img.width() as usize, img.height() as usize, &img);
 
-                if codes.len() >= 1 {
-                    let decoded = for code in codes {
-                        let Ok(code) = code else {
-                            // this code failed, maybe others in the loop can succeed?
-                            continue;
-                        };
+                let decoded = codes.find_map(|c| {
+                    let c = c.ok()?;
 
-                        let Ok(decoded) = code.decode() else {
-                            // this code failed to decode, but others might succeed
-                            continue;
-                        };
+                    c.decode().ok()
+                });
 
-                        break decoded.payload;
-                    };
-
-                    capture.close().await.unwrap();
+                if let Some(decoded) = decoded {
                     break decoded;
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             };
+
+            capture.close().await.unwrap();
 
             let login_client = oauth
                 .login_with_qr_code(Some(&metadata))
