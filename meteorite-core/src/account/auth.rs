@@ -425,6 +425,35 @@ pub mod oauth {
         }
     }
 
+    fn metadata() -> ClientMetadata {
+        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
+            .expect("Couldn't parse IPv4 redirect URI");
+        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
+            .expect("Couldn't parse IPv6 redirect URI");
+        let client_uri = Localized::new(
+            // maybe one day we will get meteorite its own website...
+            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
+            None,
+        );
+
+        ClientMetadata {
+            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
+            // TODO: possibly add policy and tos uri?
+            policy_uri: None,
+            tos_uri: None,
+            ..ClientMetadata::new(
+                ApplicationType::Native,
+                vec![
+                    OAuthGrantType::AuthorizationCode {
+                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
+                    },
+                    OAuthGrantType::DeviceCode,
+                ],
+                client_uri,
+            )
+        }
+    }
+
     /// Tries to log a user in via the OAuth Authorization Code flow.
     ///
     /// Also saves the new data (users.toml, encrypted file, keyring entry)
@@ -451,32 +480,7 @@ pub mod oauth {
             .build()
             .await?;
 
-        let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
-            .expect("Couldn't parse IPv4 redirect URI");
-        let ipv6_localhost_uri = Url::parse(&format!("http://[{}]/", Ipv6Addr::LOCALHOST))
-            .expect("Couldn't parse IPv6 redirect URI");
-        let client_uri = Localized::new(
-            // maybe one day we will get meteorite its own website...
-            Url::parse("https://github.com/vektrace/meteorite").expect("Couldn't parse client URI"),
-            None,
-        );
-
-        let metadata = Raw::new(&ClientMetadata {
-            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
-            // TODO: possibly add policy and tos uri?
-            policy_uri: None,
-            tos_uri: None,
-            ..ClientMetadata::new(
-                ApplicationType::Native,
-                vec![
-                    OAuthGrantType::AuthorizationCode {
-                        redirect_uris: vec![ipv4_localhost_uri, ipv6_localhost_uri],
-                    },
-                    OAuthGrantType::DeviceCode,
-                ],
-                client_uri,
-            )
-        })?;
+        let metadata = Raw::new(&metadata())?;
 
         let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
 
