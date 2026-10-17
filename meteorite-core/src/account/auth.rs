@@ -743,7 +743,7 @@ pub mod oauth {
 
                 let mut decoder = quircs::Quirc::default();
 
-                let codes = decoder.identify(img.width() as usize, img.height() as usize, &img);
+                let mut codes = decoder.identify(img.width() as usize, img.height() as usize, &img);
 
                 let decoded = codes.find_map(|c| {
                     let c = c.ok()?;
