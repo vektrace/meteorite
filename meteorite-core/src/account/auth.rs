@@ -679,6 +679,8 @@ pub mod oauth {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         /// Tries to log a user in by scanning a QR code.
         ///
+        /// Note that a custom device ID is not supported, so an existing one cannot be reused.
+        ///
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
         pub async fn scan(
