@@ -354,7 +354,7 @@ pub fn LoginScreen() -> Element {
                                 }
 
                                 if let Some(choices) = &*login_choices.read()
-                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { preferred: _ }))
+                                    && choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { .. }))
                                 {
                                     button {
                                         class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
