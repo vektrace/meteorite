@@ -4612,6 +4612,7 @@ dependencies = [
  "anyhow",
  "apple-native-keyring-store",
  "camera-rs",
+ "image",
  "keyring-core",
  "matrix-sdk",
  "qrcode-generator",

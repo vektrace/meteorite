@@ -668,6 +668,155 @@ pub mod oauth {
 
             Ok(client)
         }
+
+        pub enum QrState {
+            /// Input attached check code on other device
+            InputCheckCode(u8),
+            /// Waiting for access token, code attached which other device might ask for
+            WaitingForToken(String),
+        }
+
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        /// Tries to log a user in by scanning a QR code.
+        ///
+        /// Also saves the new data (users.toml, encrypted file, keyring entry)
+        /// On success, an authenticated Client is returned.
+        pub async fn scan(
+            homeserver: String,
+            device_id: Option<OwnedDeviceId>,
+            tx: mpsc::UnboundedSender<QrState>,
+        ) -> anyhow::Result<Client> {
+            use camera::{
+                CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
+            };
+            use image::{DynamicImage, RgbImage};
+            use matrix_sdk::authentication::oauth::qrcode::{QrCodeData, QrProgress};
+
+            remove_orphaned_accounts();
+
+            let (id, encryption_passphrase) = generate_account_credentials();
+
+            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
+
+            let sqlite_path = account_path.join(&id);
+
+            tokio::fs::create_dir_all(&account_path).await?;
+
+            // construct the client
+            let client = Client::builder()
+                .server_name_or_homeserver_url(homeserver)
+                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .build()
+                .await?;
+
+            let metadata = Raw::new(&metadata())?.into();
+            let oauth = client.oauth();
+
+            let system = CameraSystem::new();
+            let mut capture = system
+                .capture(DeviceSelector::default())
+                .profile(CaptureProfile::Preview)
+                .start()
+                .await?;
+
+            let decoded = loop {
+                let Ok(frame) = capture.next_frame().await else {
+                    // maybe more luck on the next frame?
+                    continue;
+                };
+
+                let layout = frame.layout();
+                let width = layout.width;
+                let height = layout.height;
+
+                // convert to rgb before converting to grayscale
+                let request = ConversionRequest::for_layout(layout);
+                let mut rgb_data = vec![0; request.output_len().unwrap()];
+
+                let mut converter = RgbConverter::new();
+                converter
+                    .convert_into(&frame, request, &mut rgb_data)
+                    .unwrap();
+
+                let rgb_image = RgbImage::from_raw(width, height, rgb_data).unwrap();
+                let img = DynamicImage::ImageRgb8(rgb_image).into_luma8();
+
+                let mut decoder = quircs::Quirc::default();
+
+                let codes = decoder.identify(img.width() as usize, img.height() as usize, &img);
+
+                if codes.len() >= 1 {
+                    let decoded = for code in codes {
+                        let Ok(code) = code else {
+                            // this code failed, maybe others in the loop can succeed?
+                            continue;
+                        };
+
+                        let Ok(decoded) = code.decode() else {
+                            // this code failed to decode, but others might succeed
+                            continue;
+                        };
+
+                        break decoded.payload;
+                    };
+
+                    capture.close().await.unwrap();
+                    break decoded;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            };
+
+            let login_client = oauth
+                .login_with_qr_code(Some(&metadata))
+                .scan(QrCodeData::from_bytes(&decoded));
+            let mut subscriber = login_client.subscribe_to_progress();
+
+            let task = tokio::spawn(async move {
+                while let Some(state) = subscriber.next().await {
+                    match state {
+                        LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
+                        LoginProgress::EstablishingSecureChannel(QrProgress { check_code }) => {
+                            tx.send(QrState::InputCheckCode(check_code)).ok();
+                        }
+                        LoginProgress::WaitingForToken { user_code } => {
+                            tx.send(QrState::WaitingForToken(user_code)).ok();
+                        }
+                        LoginProgress::Done => break,
+                    }
+                }
+            });
+
+            let result = login_client.await;
+            task.abort();
+
+            result?;
+
+            let session = client
+                .oauth()
+                .full_session()
+                .expect("Client should be logged in");
+
+            // construct new secure account data from response
+            let secure_data = SecureAccountData::new(
+                session.user.tokens.access_token,
+                session.user.tokens.refresh_token,
+                session.user.meta.device_id,
+                Some(session.client_id),
+            );
+
+            tokio::task::spawn_blocking(move || {
+                save_new_account(
+                    &id,
+                    session.user.meta.user_id,
+                    &secure_data,
+                    &encryption_passphrase,
+                )
+            })
+            .await??;
+
+            Ok(client)
+        }
     }
 }
 

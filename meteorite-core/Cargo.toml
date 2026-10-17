@@ -38,5 +38,6 @@ apple-native-keyring-store = { version = "1.0.0", features = ["protected"] }
 android-native-keyring-store = "1.0.0"
 
 [target.'cfg(any(target_os ="android", target_os = "ios"))'.dependencies]
-camera-rs = "0.5.1"
+camera-rs = { version = "0.5.1", features = ["convert-rgb"] }
 quircs = "0.10.3"
+image = "0.25.10"
