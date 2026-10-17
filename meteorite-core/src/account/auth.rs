@@ -27,7 +27,7 @@ use matrix_sdk::{
     Client, RefreshTokenError, SessionChange,
     ruma::{
         OwnedDeviceId, OwnedUserId,
-        api::{client::session::get_login_types::v3::LoginType, error::ErrorKind},
+        api::{FeatureFlag, client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
@@ -114,6 +114,8 @@ pub enum LoginChoice {
     Oauth {
         /// Wether the client should ignore all other methods and only advertise OAuth
         preferred: bool,
+        /// Whether the client supports logging in with a QR Code
+        supports_msc4108: bool,
     },
 }
 
@@ -142,6 +144,11 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
     } else {
         true
     };
+
+    let supports_msc4108 = client
+        .unstable_features()
+        .await?
+        .contains(&FeatureFlag::Msc4108);
 
     if login_types
         .iter()
