@@ -752,7 +752,7 @@ pub mod oauth {
                 });
 
                 if let Some(decoded) = decoded {
-                    break decoded;
+                    break decoded.payload;
                 }
 
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
