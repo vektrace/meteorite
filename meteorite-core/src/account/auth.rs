@@ -683,7 +683,6 @@ pub mod oauth {
         /// On success, an authenticated Client is returned.
         pub async fn scan(
             homeserver: String,
-            device_id: Option<OwnedDeviceId>,
             tx: mpsc::UnboundedSender<QrState>,
         ) -> anyhow::Result<Client> {
             use camera::{
