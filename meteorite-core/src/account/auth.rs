@@ -714,7 +714,7 @@ pub mod oauth {
 
             let system = CameraSystem::new();
             let mut capture = system
-                .capture(DeviceSelector::default())
+                .capture(DeviceSelector::Default)
                 .profile(CaptureProfile::Preview)
                 .start()
                 .await?;
