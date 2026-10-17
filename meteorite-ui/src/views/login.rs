@@ -325,7 +325,7 @@ pub fn LoginScreen() -> Element {
 
                                 if let Some(choices) = &*login_choices.read()
                                     && choices.iter().any(|c| matches!(c, auth::LoginChoice::Password))
-                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true }))
+                                    && choices.iter().all(|c| !matches!(c, auth::LoginChoice::Oauth { preferred: true, .. }))
                                 {
                                     TextField {
                                         label: "Username",
