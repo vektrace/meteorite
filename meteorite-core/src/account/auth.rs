@@ -670,6 +670,8 @@ pub mod oauth {
         }
 
         pub enum QrState {
+            /// Waiting for QR Code to be scanned
+            WaitingForScan,
             /// Input attached check code on other device
             InputCheckCode(u8),
             /// Waiting for access token, code attached which other device might ask for
@@ -719,6 +721,8 @@ pub mod oauth {
                 .profile(CaptureProfile::Preview)
                 .start()
                 .await?;
+
+            tx.send(QrState::WaitingForScan).ok();
 
             let decoded = loop {
                 let Ok(frame) = capture.next_frame().await else {

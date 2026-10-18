@@ -26,5 +26,6 @@
   - UI
     - [ ] meteorite-ui/src/main.rs: set icon
     - [ ] meteorite-ui/src/main.rs: adjust title based on what the user is doing, e.g. (3) meteorite - Matrix HQ
+    - [ ] meteorite-ui/src/views/login.rs: Show a live camera stream
 
 ... and more according to [this](https://spec.matrix.org/v1.19/client-server-api/#summary) (will be added to list later)
