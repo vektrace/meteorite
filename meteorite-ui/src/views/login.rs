@@ -221,8 +221,7 @@ pub fn LoginScreen() -> Element {
         current_task.set(Some(task));
     };
 
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    let mut start_oauth_qr_scan_login = move || {
+    let start_oauth_qr_scan_login = move |_| {
         if is_busy() {
             return;
         }
@@ -232,12 +231,10 @@ pub fn LoginScreen() -> Element {
         is_busy.set(true);
         error.set(None);
 
-        let hs = homeserver.read().clone();
-
         let task = spawn(async move {
             let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let mut handle = tokio::spawn(auth::oauth::qr::scan(hs, state_tx));
+            let mut handle = tokio::spawn(auth::oauth::qr::scan(state_tx));
 
             loop {
                 tokio::select! {
@@ -268,7 +265,7 @@ pub fn LoginScreen() -> Element {
         current_task.set(Some(task));
     };
 
-    let mut start_oauth_qr_display_login = move || {
+    let start_oauth_qr_display_login = move |_| {
         if is_busy() {
             return;
         }
@@ -532,6 +529,14 @@ pub fn LoginScreen() -> Element {
                                         },
                                         "Check"
                                     }
+
+                                    if cfg!(any(target_os = "android", target_os = "ios")) {
+                                        button {
+                                            class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
+                                            onclick: start_oauth_qr_scan_login,
+                                            "Continue with QR Code"
+                                        }
+                                    }
                                 } else {
                                     button {
                                         class: "z-60 w-full py-2 bg-red-600 hover:bg-red-500 rounded-lg text-white font-medium transition-colors cursor-pointer",
@@ -597,15 +602,12 @@ pub fn LoginScreen() -> Element {
                                         onclick: start_oauth_login,
                                         "Continue with Homeserver"
                                     }
-                                    if choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { supports_msc4108: true, .. })) {
+                                    if choices.iter().any(|c| matches!(c, auth::LoginChoice::Oauth { supports_msc4108: true, .. }))
+                                        && cfg!(not(any(target_os = "android", target_os = "ios")))
+                                    {
                                         button {
                                             class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
-                                            onclick: move |_| {
-                                                #[cfg(any(target_os = "android", target_os = "ios"))]
-                                                start_oauth_qr_scan_login();
-                                                #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                                                start_oauth_qr_display_login();
-                                            },
+                                            onclick: start_oauth_qr_display_login,
                                             "Continue with QR Code"
                                         }
                                     }

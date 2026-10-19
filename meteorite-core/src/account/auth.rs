@@ -543,10 +543,16 @@ pub mod oauth {
     }
 
     pub mod qr {
+        use camera::{
+            CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
+        };
+        use image::{DynamicImage, RgbImage};
         use matrix_sdk::authentication::oauth::qrcode::{
-            GeneratedQrProgress, LoginProgress, SenderError,
+            GeneratedQrProgress, LoginProgress, Msc4108IntentData, QrCodeData, QrCodeIntentData,
+            QrProgress, SenderError,
         };
         use matrix_sdk::stream::StreamExt;
+        use qrcode_generator::{Renderer, qr::Encoder};
 
         use super::*;
 
@@ -573,8 +579,6 @@ pub mod oauth {
             tx: mpsc::UnboundedSender<GeneratedQrState>,
             mut rx: mpsc::UnboundedReceiver<u8>,
         ) -> anyhow::Result<Client> {
-            use qrcode_generator::{Renderer, qr::Encoder};
-
             remove_orphaned_accounts();
 
             let (id, encryption_passphrase) = generate_account_credentials();
@@ -678,23 +682,13 @@ pub mod oauth {
             WaitingForToken(String),
         }
 
-        #[cfg(any(target_os = "android", target_os = "ios"))]
         /// Tries to log a user in by scanning a QR code.
         ///
         /// Note that a custom device ID is not supported, so an existing one cannot be reused.
         ///
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
-        pub async fn scan(
-            homeserver: String,
-            tx: mpsc::UnboundedSender<QrState>,
-        ) -> anyhow::Result<Client> {
-            use camera::{
-                CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
-            };
-            use image::{DynamicImage, RgbImage};
-            use matrix_sdk::authentication::oauth::qrcode::{QrCodeData, QrProgress};
-
+        pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
             remove_orphaned_accounts();
 
             let (id, encryption_passphrase) = generate_account_credentials();
@@ -704,16 +698,6 @@ pub mod oauth {
             let sqlite_path = account_path.join(&id);
 
             tokio::fs::create_dir_all(&account_path).await?;
-
-            // construct the client
-            let client = Client::builder()
-                .server_name_or_homeserver_url(homeserver)
-                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
-                .build()
-                .await?;
-
-            let metadata = Raw::new(&metadata())?.into();
-            let oauth = client.oauth();
 
             let system = CameraSystem::new();
             let mut capture = system
@@ -766,6 +750,25 @@ pub mod oauth {
             capture.close().await.unwrap();
 
             let qr_data = QrCodeData::from_bytes(&decoded)?;
+
+            let QrCodeIntentData::Msc4108 {
+                data: Msc4108IntentData::Reciprocate { server_name },
+                ..
+            } = &qr_data.intent_data()
+            else {
+                anyhow::bail!("QR code invalid, no homeserver received in the QR code.");
+            };
+
+            // construct the client
+            let client = Client::builder()
+                .server_name_or_homeserver_url(server_name)
+                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .build()
+                .await?;
+
+            let metadata = Raw::new(&metadata())?.into();
+            let oauth = client.oauth();
+
             let login_client = oauth.login_with_qr_code(Some(&metadata)).scan(&qr_data);
             let mut subscriber = login_client.subscribe_to_progress();
 
