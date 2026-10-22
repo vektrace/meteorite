@@ -676,13 +676,15 @@ fn TextField(
                 }
             }
 
-            if show_error {
-                span {
-                    class: "text-xs text-red-400 px-1 animate-fade-in",
-                    "This field is required"
-                }
-            } else {
-                div { class: "h-[15px]" }
+            span {
+                class: format_args!("text-xs text-red-400 px-1 animate-fade-in {}",
+                    if show_error {
+                        "opacity-100"
+                    } else {
+                        "opacity-0"
+                    }
+                ),
+                "This field is required"
             }
         }
     }
