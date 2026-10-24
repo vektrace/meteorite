@@ -27,7 +27,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Prexec (Environment Setup)
         run: |
@@ -62,7 +62,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check
         run: cargo check --all-features --workspace
@@ -80,7 +80,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Prexec (Environment Setup)
         run: echo "OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl" | tee -a "$GITHUB_ENV"
@@ -110,7 +110,7 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check
         env:
@@ -131,7 +131,7 @@ jobs:
           targets: aarch64-apple-ios
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check
         run: cargo check --all-features --workspace --target aarch64-apple-ios
