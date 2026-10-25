@@ -6,9 +6,6 @@
 
 All code must be formatted with `cargo fmt`.
 
-**Under no circumstances should you use `dx fmt`.**
-> Note: `dx fmt` rewrites `rsx!` blocks and Rust code using non-standard rules that fail `cargo fmt` checks and break CI pipelines. Always stick to `cargo fmt`.
-
 ### Linting
 
 Your code must pass `cargo clippy` with zero warnings.
@@ -61,80 +58,12 @@ We value human-authored code where the contributor deeply understands the logic,
 ## How to Contribute
 
 1. **Fork or Clone** the repository.
-2. Install required tools and prerequisites:
-
-    * [Dioxus CLI](https://dioxuslabs.com/learn/0.6/getting_started/#install-the-dioxus-cli) (required for UI development and running the desktop app)
-
-   ### Prerequisites (Linux)
-
-    If you are developing on Linux, you must install native C/C++ build tools and WebKitGTK development headers before building the project.
-
-   #### Debian / Ubuntu / Linux Mint / Pop!_OS
-
-    ```bash
-    sudo apt-get update
-    sudo apt-get install -y \
-      build-essential \
-      pkg-config \
-      libglib2.0-dev \
-      libgtk-3-dev \
-      libjavascriptcoregtk-4.1-dev \
-      libsoup-3.0-dev \
-      libwebkit2gtk-4.1-dev \
-      libssl-dev \
-      libxdo-dev
-    ```
-
-   #### Fedora / RHEL / AlmaLinux
-
-    ```bash
-    sudo dnf install -y \
-      @development-tools \
-      pkgconf-pkg-config \
-      glib2-devel \
-      gtk3-devel \
-      javascriptcoregtk4.1-devel \
-      libsoup3-devel \
-      webkit2gtk4.1-devel \
-      openssl-devel \
-      xdotool-devel
-    ```
-
-   #### Arch Linux / Manjaro
-
-    ```bash
-    sudo pacman -S --needed \
-      base-devel \
-      gtk3 \
-      webkit2gtk-4.1 \
-      libsoup3 \
-      openssl \
-      xdotool
-    ```
-
-    > **Note:** On Arch Linux, development headers are bundled directly inside the main package releases.
-
-   #### openSUSE (Tumbleweed / Leap)
-
-    ```bash
-    sudo zypper install -y -t pattern devel_basis
-    sudo zypper install -y \
-      pkg-config \
-      glib2-devel \
-      gtk3-devel \
-      javascriptcoregtk-4_1-devel \
-      libsoup-3_0-devel \
-      webkit2gtk-4_1-devel \
-      libopenssl-devel \
-      xdotool-devel
-    ```
-
-3. **Create a new branch** from `main`:
+2. **Create a new branch** from `main`:
 
     ```bash
     git checkout -b type/your-branch-name
     ```
 
-4. Check out [`TODO.md`](TODO.md) or search for comments in code starting with `TODO`
+3. Check out [`TODO.md`](TODO.md) or search for comments in code starting with `TODO`
 
 **Branches that do not follow our rules will not be merged.**
