@@ -1,0 +1,29 @@
+export component Button inherits Rectangle {
+    // border-radius needs to be specified here to "bypass" this bug: https://github.com/slint-ui/slint/issues/9690
+    border-radius: 0px;
+
+    callback clicked;
+    in property <bool> enabled: true;
+    in property <string> text;
+    in property <brush> base-color;
+    in property <brush> text-color;
+    in property <brush> hover-color;
+    in property <brush> disabled-color;
+
+    background: !enabled ? disabled-color : touch.has-hover ? hover-color : base-color;
+    animate background {
+        duration: 100ms;
+    }
+
+    Text {
+        text: text;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        enabled: root.enabled;
+
+        clicked => {
+            root.clicked();
+        }
+    }
+}

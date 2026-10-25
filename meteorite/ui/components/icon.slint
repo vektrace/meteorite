@@ -1,0 +1,13 @@
+export component Icon inherits Rectangle {
+    // border-radius needs to be specified here to "bypass" this bug: https://github.com/slint-ui/slint/issues/9690
+    border-radius: 0px;
+
+    clip: true;
+
+    Image {
+        source: @image-url("../../assets/icon/icon.png");
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+    }
+}
