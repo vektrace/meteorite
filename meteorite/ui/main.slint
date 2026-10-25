@@ -1,0 +1,46 @@
+/*
+    meteorite  Fast, Secure & Easy-to-use Matrix client in Rust
+    Copyright (C) 2026  Vektrace
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as
+    published by the Free Software Foundation, either version 3 of the
+    License, or (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import { Main } from "screens/main/main.slint";
+import { Loading, LoadingData } from "screens/loading/loading.slint";
+import { Login } from "screens/login/login.slint";
+
+export enum Screen {
+    main,
+    loading,
+    login,
+}
+
+export component App inherits Window {
+    maximized: true;
+    icon: @image-url("../assets/icon/icon-rounded.png");
+    title: "meteorite";
+
+    in property <Screen> screen: Screen.loading;
+
+    in-out property <LoadingData> loading-data;
+
+    callback loading-retry;
+
+    if root.screen == Screen.loading: Loading {
+        data: root.loading-data;
+        retry => loading-retry();
+    }
+    if root.screen == Screen.main: Main {}
+    if root.screen == Screen.login: Login {}
+}
