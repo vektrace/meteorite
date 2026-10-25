@@ -1,0 +1,85 @@
+/*
+    meteorite  Fast, Secure & Easy-to-use Matrix client in Rust
+    Copyright (C) 2026  Vektrace
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as
+    published by the Free Software Foundation, either version 3 of the
+    License, or (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import { Bg } from "../../components/bg.slint";
+import { Icon } from "../../components/icon.slint";
+import { Spinner } from "../../components/spinner.slint";
+import { Button } from "../../components/button.slint";
+
+export struct LoadingData {
+    error: string,
+}
+
+export component Loading inherits Rectangle {
+    in-out property <LoadingData> data;
+    callback retry;
+
+    Bg {
+        VerticalLayout {
+            padding: 48px;
+            spacing: 5px;
+            cross-axis-alignment: center;
+            Icon {
+                width: 256px;
+                height: 256px;
+                border-radius: 16px;
+            }
+
+            if data.error == "": Spinner {
+                size: 128px;
+                bg: #27272a;
+                fg: #1e40af;
+            }
+
+            if data.error != "": VerticalLayout {
+                padding-top: 48px;
+                spacing: 48px;
+                cross-axis-alignment: center;
+
+                Rectangle {
+                    width: label-error.preferred-width + 40px;
+                    height: label-error.preferred-height + 20px;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: #f87171;
+                    background: #dc2626;
+
+                    label-error := Text {
+                        text: data.error;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Button {
+                    width: root.width / 5;
+                    height: 40px;
+                    border-radius: 10px;
+                    base-color: #e7000b;
+                    hover-color: #fb2c36;
+                    enabled: true;
+                    text: "test";
+                    text-color: white;
+
+                    clicked => {
+                        retry();
+                    }
+                }
+            }
+        }
+    }
+}
