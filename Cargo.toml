@@ -1,5 +1,5 @@
 [workspace]
-members = ["meteorite-core", "meteorite-ui"]
+members = ["meteorite-core", "meteorite"]
 resolver = "3"
 
 [workspace.dependencies]

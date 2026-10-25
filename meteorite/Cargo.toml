@@ -1,0 +1,19 @@
+[package]
+name = "meteorite"
+version = "0.1.0"
+edition = "2024"
+authors = ["Vektrace <contact@vektrace.com>"]
+description = "Fast, Secure & Easy-to-use Matrix client in Rust"
+license = "AGPL-3.0-only"
+repository = "https://github.com/vektrace/meteorite"
+build = "build.rs"
+
+[dependencies]
+meteorite-core = { path = "../meteorite-core" }
+slint = "1.18.1"
+
+tokio = { workspace = true }
+webbrowser = { workspace = true }
+
+[build-dependencies]
+slint-build = "1.18.1"
