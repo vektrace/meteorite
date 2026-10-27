@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./meteorite-ui/assets/icon/icon-rounded.png" alt="meteorite" width="150">
+  <img src="./meteorite/assets/icon/icon-rounded.png" alt="meteorite" width="150">
 </p>
 
 <h1 align="center">meteorite</h1>
