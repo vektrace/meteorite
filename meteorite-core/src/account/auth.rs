@@ -21,17 +21,17 @@ use super::{
     remove_account,
 };
 use crate::{ACCOUNT_PATH, APP_NAME, INITIAL_DEVICE_NAME, utils};
-use age::secrecy::SecretString;
+use age::{secrecy::ExposeSecret, x25519::Identity};
 use keyring_core::Entry;
 use matrix_sdk::{
-    Client, RefreshTokenError, SessionChange,
+    Client, RefreshTokenError, SessionChange, SqliteStoreConfig,
     ruma::{
         OwnedDeviceId, OwnedUserId,
         api::{FeatureFlag, client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 use std::{fs, path::Path, path::PathBuf};
 use tokio::sync::{mpsc, oneshot};
 
@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, oneshot};
 // the users homeserver.
 
 // SESSION STORING
-// store sessions in encrypted files (using age crate) and store passphrase to tht in keyring
+// store sessions in encrypted files (using age crate) and store identity to tht in keyring
 // user_ids are stored in unencrypted with information if its active or not
 
 // guard to clean up failed account creations
@@ -297,16 +297,17 @@ pub async fn login() -> anyhow::Result<Option<Client>> {
     let secure_path = account_path.join(format!("{}.enc", account_data.id));
     let sqlite_path = account_path.join(&account_data.id);
 
-    let encryption_passphrase = load_encryption_passphrase(&account_data.id)?;
+    let identity = load_x25519_identity(&account_data.id)?;
 
-    let secure_account_data = load_secure_account_data(&secure_path, &encryption_passphrase)?;
+    let secure_account_data = load_secure_account_data(&secure_path, &identity)?;
 
     // construct the client
     let client = Client::builder()
         .server_name_or_homeserver_url(account_data.user_id.server_name())
-        .sqlite_store(
-            sqlite_path,
-            Some(&encryption_passphrase), // same as for encrypted files
+        .sqlite_store_with_config_and_cache_path(
+            SqliteStoreConfig::new(&sqlite_path)
+                .key(Some(identity.to_string().expose_secret().as_bytes())),
+            None::<PathBuf>,
         )
         .build()
         .await?;
@@ -337,8 +338,8 @@ pub async fn login_username(
     // first remove possible leftovers
     remove_orphaned_accounts();
 
-    // get id and passphrase
-    let (id, encryption_passphrase) = generate_account_credentials();
+    // get id and identity
+    let (id, identity) = generate_account_credentials();
 
     // define paths
     let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
@@ -350,7 +351,11 @@ pub async fn login_username(
     // construct client
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
-        .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+        .sqlite_store_with_config_and_cache_path(
+            SqliteStoreConfig::new(&sqlite_path)
+                .key(Some(identity.to_string().expose_secret().as_bytes())),
+            None::<PathBuf>,
+        )
         .build()
         .await?;
 
@@ -376,7 +381,7 @@ pub async fn login_username(
     );
 
     tokio::task::spawn_blocking(move || {
-        save_new_account(&id, response.user_id, &secure_data, &encryption_passphrase)
+        save_new_account(&id, response.user_id, &secure_data, identity)
     })
     .await??;
 
@@ -465,7 +470,7 @@ pub mod oauth {
     ) -> anyhow::Result<Client> {
         remove_orphaned_accounts();
 
-        let (id, encryption_passphrase) = generate_account_credentials();
+        let (id, identity) = generate_account_credentials();
 
         let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
 
@@ -476,7 +481,11 @@ pub mod oauth {
         // construct the client
         let client = Client::builder()
             .server_name_or_homeserver_url(homeserver)
-            .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+            .sqlite_store_with_config_and_cache_path(
+                SqliteStoreConfig::new(&sqlite_path)
+                    .key(Some(identity.to_string().expose_secret().as_bytes())),
+                None::<PathBuf>,
+            )
             .build()
             .await?;
 
@@ -530,12 +539,7 @@ pub mod oauth {
         );
 
         tokio::task::spawn_blocking(move || {
-            save_new_account(
-                &id,
-                session.user.meta.user_id,
-                &secure_data,
-                &encryption_passphrase,
-            )
+            save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
         })
         .await??;
 
@@ -581,7 +585,7 @@ pub mod oauth {
         ) -> anyhow::Result<Client> {
             remove_orphaned_accounts();
 
-            let (id, encryption_passphrase) = generate_account_credentials();
+            let (id, identity) = generate_account_credentials();
 
             let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
 
@@ -592,7 +596,11 @@ pub mod oauth {
             // construct the client
             let client = Client::builder()
                 .server_name_or_homeserver_url(homeserver)
-                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .sqlite_store_with_config_and_cache_path(
+                    SqliteStoreConfig::new(&sqlite_path)
+                        .key(Some(identity.to_string().expose_secret().as_bytes())),
+                    None::<PathBuf>,
+                )
                 .build()
                 .await?;
 
@@ -661,12 +669,7 @@ pub mod oauth {
             );
 
             tokio::task::spawn_blocking(move || {
-                save_new_account(
-                    &id,
-                    session.user.meta.user_id,
-                    &secure_data,
-                    &encryption_passphrase,
-                )
+                save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
             })
             .await??;
 
@@ -691,7 +694,7 @@ pub mod oauth {
         pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
             remove_orphaned_accounts();
 
-            let (id, encryption_passphrase) = generate_account_credentials();
+            let (id, identity) = generate_account_credentials();
 
             let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
 
@@ -762,7 +765,11 @@ pub mod oauth {
             // construct the client
             let client = Client::builder()
                 .server_name_or_homeserver_url(server_name)
-                .sqlite_store(&sqlite_path, Some(&encryption_passphrase))
+                .sqlite_store_with_config_and_cache_path(
+                    SqliteStoreConfig::new(&sqlite_path)
+                        .key(Some(identity.to_string().expose_secret().as_bytes())),
+                    None::<PathBuf>,
+                )
                 .build()
                 .await?;
 
@@ -806,12 +813,7 @@ pub mod oauth {
             );
 
             tokio::task::spawn_blocking(move || {
-                save_new_account(
-                    &id,
-                    session.user.meta.user_id,
-                    &secure_data,
-                    &encryption_passphrase,
-                )
+                save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
             })
             .await??;
 
@@ -967,9 +969,9 @@ fn update_account_config(
 
     let secure_path = account_path.join(format!("{}.enc", id));
 
-    let encryption_passphrase = load_encryption_passphrase(&id)?;
+    let identity = load_x25519_identity(&id)?;
 
-    let mut secure_data = load_secure_account_data(&secure_path, &encryption_passphrase)?;
+    let mut secure_data = load_secure_account_data(&secure_path, &identity)?;
 
     if let Some(access_token) = access_token {
         secure_data.access_token = access_token;
@@ -981,11 +983,8 @@ fn update_account_config(
     // secure_data struct -> toml
     let serialized = toml::to_string(&secure_data)?;
 
-    // get recipient from passphrase
-    let recipient = age::scrypt::Recipient::new(SecretString::from(encryption_passphrase));
-
     // encrypt secure data
-    let encrypted_bytes = age::encrypt(&recipient, serialized.as_bytes())?;
+    let encrypted_bytes = age::encrypt(&identity.to_public(), serialized.as_bytes())?;
 
     // write bytes to encrypted file
     atomic_write(&secure_path, &encrypted_bytes)?;
@@ -1000,32 +999,28 @@ fn atomic_write<C: AsRef<[u8]>>(target: &Path, contents: C) -> anyhow::Result<()
     Ok(())
 }
 
-fn load_secure_account_data(
-    path: &Path,
-    encryption_passphrase: &str,
-) -> anyhow::Result<SecureAccountData> {
+fn load_secure_account_data(path: &Path, identity: &Identity) -> anyhow::Result<SecureAccountData> {
     // load encrypted file contents
     let data = fs::read(path)?;
 
-    // get identity from passphrase
-    let identity = age::scrypt::Identity::new(SecretString::from(encryption_passphrase));
-    let decrypted_bytes = age::decrypt(&identity, &data)?;
+    let decrypted_bytes = age::decrypt(identity, &data)?;
     toml::from_slice(&decrypted_bytes).map_err(|e| anyhow::anyhow!(e))
 }
 
-fn load_encryption_passphrase(id: &str) -> Result<String, keyring_core::Error> {
-    // retrieve encryption passphrase from keyring (used for file encryption and db encryption)
-    let encryption_passphrase_entry = Entry::new(APP_NAME, id)?;
-    encryption_passphrase_entry.get_password()
+fn load_x25519_identity(id: &str) -> anyhow::Result<Identity> {
+    let entry = Entry::new(APP_NAME, id)?;
+    let raw = entry.get_password()?;
+    Identity::from_str(raw.trim())
+        .map_err(|err| anyhow::anyhow!("account {id} has no usable age identity: {err}"))
 }
 
-fn generate_account_credentials() -> (String, String) {
+fn generate_account_credentials() -> (String, Identity) {
     let mut rng = rand::rng();
     // generate id for usage on sqlite store and other files
     let id = Alphanumeric.sample_string(&mut rng, 32);
-    // generate passphrase for sqlite store and encrypted files
-    let encryption_passphrase = Alphanumeric.sample_string(&mut rng, 32);
-    (id, encryption_passphrase)
+    // generate x25519 identity for sqlite store and encrypted files
+    let identity = Identity::generate();
+    (id, identity)
 }
 
 fn save_new_account(
@@ -1033,7 +1028,7 @@ fn save_new_account(
     user_id: OwnedUserId,
     secure_data: &SecureAccountData,
 
-    encryption_passphrase: &str,
+    identity: Identity,
 ) -> anyhow::Result<()> {
     let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
 
@@ -1045,13 +1040,10 @@ fn save_new_account(
     // secure_data struct -> toml
     let serialized = toml::to_string(secure_data)?;
 
-    // get recipient from passphrase
-    let recipient = age::scrypt::Recipient::new(SecretString::from(encryption_passphrase));
-
     // encrypt secure data
-    let encrypted_bytes = age::encrypt(&recipient, serialized.as_bytes())?;
+    let encrypted_bytes = age::encrypt(&identity.to_public(), serialized.as_bytes())?;
 
-    let encryption_passphrase_entry = Entry::new(APP_NAME, id)?;
+    let entry = Entry::new(APP_NAME, id)?;
 
     // create guard as soon as possible
     let mut guard = AccountCreationGuard {
@@ -1067,7 +1059,7 @@ fn save_new_account(
         users_tmp_path: users_path.with_extension("tmp").clone(),
         secure_tmp_path: secure_path.with_extension("tmp").clone(),
 
-        keyring_entry: encryption_passphrase_entry,
+        keyring_entry: entry,
         keyring_created: false,
 
         committed: false,
@@ -1105,8 +1097,10 @@ fn save_new_account(
     // write unencrypted file
     atomic_write(&users_path, toml_account_data)?;
 
-    // save encryption passphrase to keyring (used for file encryption and db encryption)
-    guard.keyring_entry.set_password(encryption_passphrase)?;
+    // save identity to keyring (used for file encryption and db encryption)
+    guard
+        .keyring_entry
+        .set_password(identity.to_string().expose_secret())?;
 
     guard.keyring_created = true;
 

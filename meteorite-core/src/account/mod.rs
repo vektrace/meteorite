@@ -85,7 +85,7 @@ struct AccountData {
     active: bool,
 }
 
-// stored in encrypted file, passphrase stored in keyring
+// stored in encrypted file, identity stored in keyring
 // only loaded when required
 #[derive(Deserialize, Serialize)]
 struct SecureAccountData {
