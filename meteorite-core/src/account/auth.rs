@@ -346,8 +346,6 @@ pub async fn login_username(
 
     let sqlite_path = account_path.join(&id);
 
-    tokio::fs::create_dir_all(&account_path).await?;
-
     // construct client
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver)
@@ -476,8 +474,6 @@ pub mod oauth {
 
         let sqlite_path = account_path.join(&id);
 
-        tokio::fs::create_dir_all(&account_path).await?;
-
         // construct the client
         let client = Client::builder()
             .server_name_or_homeserver_url(homeserver)
@@ -591,8 +587,6 @@ pub mod oauth {
 
             let sqlite_path = account_path.join(&id);
 
-            tokio::fs::create_dir_all(&account_path).await?;
-
             // construct the client
             let client = Client::builder()
                 .server_name_or_homeserver_url(homeserver)
@@ -699,8 +693,6 @@ pub mod oauth {
             let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
 
             let sqlite_path = account_path.join(&id);
-
-            tokio::fs::create_dir_all(&account_path).await?;
 
             let system = CameraSystem::new();
             let mut capture = system
