@@ -445,13 +445,8 @@ pub mod oauth {
     }
 
     pub mod qr {
-        use camera::{
-            CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
-        };
-        use image::{DynamicImage, RgbImage};
         use matrix_sdk::authentication::oauth::qrcode::{
-            GeneratedQrProgress, LoginProgress, Msc4108IntentData, QrCodeData, QrCodeIntentData,
-            QrProgress, SenderError,
+            GeneratedQrProgress, LoginProgress, SenderError,
         };
         use matrix_sdk::stream::StreamExt;
         use qrcode_generator::{Renderer, qr::Encoder};
@@ -576,7 +571,16 @@ pub mod oauth {
         ///
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
+            use camera::{
+                CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
+            };
+            use image::{DynamicImage, RgbImage};
+            use matrix_sdk::authentication::oauth::qrcode::{
+                Msc4108IntentData, QrCodeData, QrCodeIntentData, QrProgress,
+            };
+
             let storage = storage::Core::new();
 
             let system = CameraSystem::new();
