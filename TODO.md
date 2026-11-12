@@ -21,7 +21,6 @@
 - [ ] Translations (weblate)
 - [ ] proper-er error handling
 - [ ] possibly add policy/tos uri and purchase new domain???
-- [ ] migrate away from keyring-core crate (for web compat)
 
 - TODOs in files:
   - UI
