@@ -24,7 +24,7 @@ quircs = "0.10.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 
-sysdirs = "0.9.4"
+sysdirs = "0.10.2"
 keyring-core = "1.0.0"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1.1.0"
@@ -40,5 +40,5 @@ apple-native-keyring-store = { version = "1.0.0", features = ["protected"] }
 [target.'cfg(target_os = "android")'.dependencies]
 camera-rs = { version = "0.5.1", features = ["convert-rgb"] }
 image = "0.25.10"
-sysdirs = { version = "0.9.4", features = ["android-auto"] }
+sysdirs = { version = "0.10.2", features = ["android-auto"] }
 android-native-keyring-store = "1.0.0"
