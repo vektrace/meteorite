@@ -222,7 +222,7 @@ pub fn LoginScreen() -> Element {
     };
 
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let start_oauth_qr_scan_login = move || {
+    let mut start_oauth_qr_scan_login = move || {
         if is_busy() {
             return;
         }
