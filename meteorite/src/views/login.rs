@@ -221,7 +221,8 @@ pub fn LoginScreen() -> Element {
         current_task.set(Some(task));
     };
 
-    let start_oauth_qr_scan_login = move |_| {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let start_oauth_qr_scan_login = move || {
         if is_busy() {
             return;
         }
@@ -533,7 +534,10 @@ pub fn LoginScreen() -> Element {
                                     if cfg!(any(target_os = "android", target_os = "ios")) {
                                         button {
                                             class: "w-full py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-white text-sm transition-colors cursor-pointer",
-                                            onclick: start_oauth_qr_scan_login,
+                                            onclick: move |_| {
+                                                #[cfg(any(target_os = "android", target_os = "ios"))]
+                                                start_oauth_qr_scan_login();
+                                            },
                                             "Continue with QR Code"
                                         }
                                     }
