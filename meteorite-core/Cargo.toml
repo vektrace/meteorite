@@ -25,11 +25,12 @@ webbrowser = { workspace = true }
 camera-rs = { version = "0.5.1", features = ["convert-rgb"] }
 quircs = "0.10.3"
 image = "0.25.10"
+thiserror = "2.0.21"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1.1.0"
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus-secret-service-keyring-store = { version = "1.0.0", features = [
     "crypto-rust",
 ] }

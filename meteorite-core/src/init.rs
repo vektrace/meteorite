@@ -16,9 +16,8 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use crate::{ACCOUNT_PATH, APP_NAME, BASE_PATH, INITIAL_DEVICE_NAME};
+use crate::{APP_NAME, INITIAL_DEVICE_NAME};
 use std::fs;
-use std::sync::Mutex;
 
 // all functions in this file are used to inititalize something (e.g. set default keyring store)
 
@@ -39,7 +38,7 @@ pub fn setup_device_name() {
     };
 
     INITIAL_DEVICE_NAME
-        .set(Mutex::new(format!("meteorite Client ({})", name)))
+        .set(format!("meteorite Client ({})", name))
         .unwrap();
 }
 
@@ -59,7 +58,10 @@ pub fn setup_keyring() -> Result<(), keyring_core::Error> {
 }
 
 /// Creates by the application required folders.
+#[cfg(not(target_family = "wasm"))]
 pub fn setup_folders() {
+    use crate::storage::native::{ACCOUNT_PATH, BASE_PATH};
+
     let base_path = sysdirs::data_local_dir().unwrap().join(APP_NAME);
     let account_path = base_path.join("accounts");
 
@@ -84,6 +86,6 @@ pub fn setup_folders() {
 
     // set() can only return an error when it has already been set, which in this case cannot
     // happen.
-    BASE_PATH.set(Mutex::new(base_path)).unwrap();
-    ACCOUNT_PATH.set(Mutex::new(account_path)).unwrap();
+    BASE_PATH.set(base_path).unwrap();
+    ACCOUNT_PATH.set(account_path).unwrap();
 }
