@@ -18,18 +18,16 @@
 
 pub mod account;
 pub mod init;
-pub mod utils;
+mod storage;
 
 pub use matrix_sdk::Client;
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 pub const APP_NAME: &str = "com.vektrace.meteorite";
 
-static INITIAL_DEVICE_NAME: OnceLock<Mutex<String>> = OnceLock::new();
-static BASE_PATH: OnceLock<Mutex<PathBuf>> = OnceLock::new();
-static ACCOUNT_PATH: OnceLock<Mutex<PathBuf>> = OnceLock::new();
+static INITIAL_DEVICE_NAME: OnceLock<String> = OnceLock::new();
 
 /// Guard used to safely unset the default keyring store on exit
 #[derive(Clone)]
@@ -42,7 +40,8 @@ impl Drop for KeyringGuard {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[must_use]
-pub fn base_path() -> PathBuf {
-    utils::unwrap_lock(&BASE_PATH)
+pub fn base_path() -> Option<PathBuf> {
+    storage::native::BASE_PATH.get().cloned()
 }

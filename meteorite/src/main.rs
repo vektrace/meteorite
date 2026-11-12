@@ -21,7 +21,7 @@
 use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
 use meteorite_core::Client;
-use meteorite_core::{base_path, init};
+use meteorite_core::init;
 
 mod components;
 mod views;
@@ -45,17 +45,23 @@ static CLIENT: GlobalSignal<Option<Client>> = Signal::global(|| None::<Client>);
 #[tokio::main]
 async fn main() {
     init::setup_device_name();
-    init::setup_folders();
 
-    // TODO: set icon
-    LaunchBuilder::new()
-        .with_cfg(desktop! {
-            Config::default()
-                .with_data_directory(base_path())
-                .with_menu(None)
-                .with_window(WindowBuilder::new().with_title("meteorite"))
-        })
-        .launch(App);
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use meteorite_core::base_path;
+
+        init::setup_folders();
+
+        // TODO: set icon
+        LaunchBuilder::new()
+            .with_cfg(desktop! {
+                Config::default()
+                    .with_data_directory(base_path().expect("base path should already be set"))
+                    .with_menu(None)
+                    .with_window(WindowBuilder::new().with_title("meteorite"))
+            })
+            .launch(App);
+    }
 }
 
 #[component]
