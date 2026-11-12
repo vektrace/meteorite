@@ -23,9 +23,9 @@ webbrowser = { workspace = true }
 quircs = "0.10.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-
 sysdirs = "0.10.2"
 keyring-core = "1.0.0"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1.1.0"
 
