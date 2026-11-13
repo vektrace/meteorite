@@ -7,7 +7,6 @@ publish = false
 [dependencies]
 age = "0.12.1"
 anyhow = "1.0.102"
-keyring-core = "1.0.0"
 matrix-sdk = { version = "0.19.0", features = [
     "bundled-sqlite",
     "e2e-encryption",
@@ -18,18 +17,24 @@ matrix-sdk = { version = "0.19.0", features = [
 qrcode-generator = "6.1.2"
 rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
-sysdirs = { version = "0.9.4", features = ["android-auto"] }
 tokio = { workspace = true }
 toml = "1.1.2"
 webbrowser = { workspace = true }
-camera-rs = { version = "0.5.1", features = ["convert-rgb"] }
 quircs = "0.10.3"
+thiserror = "2.0.21"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+sysdirs = "0.10.2"
+keyring-core = "1.0.0"
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+camera-rs = { version = "0.5.1", features = ["convert-rgb"] }
 image = "0.25.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1.1.0"
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus-secret-service-keyring-store = { version = "1.0.0", features = [
     "crypto-rust",
 ] }
@@ -38,4 +43,5 @@ zbus-secret-service-keyring-store = { version = "1.0.0", features = [
 apple-native-keyring-store = { version = "1.0.0", features = ["protected"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+sysdirs = { version = "0.10.2", features = ["android-auto"] }
 android-native-keyring-store = "1.0.0"

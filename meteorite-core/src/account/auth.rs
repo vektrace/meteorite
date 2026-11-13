@@ -16,23 +16,18 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-use super::{
-    Account, AccountData, AccountList, SecureAccountData, active_account, load_account_list,
-    remove_account,
+use super::SecureAccountData;
+use crate::{
+    INITIAL_DEVICE_NAME,
+    storage::{self, StorageApi},
 };
-use crate::{ACCOUNT_PATH, APP_NAME, INITIAL_DEVICE_NAME, utils};
-use age::{secrecy::ExposeSecret, x25519::Identity};
-use keyring_core::Entry;
 use matrix_sdk::{
-    Client, RefreshTokenError, SessionChange, SqliteStoreConfig,
+    Client, RefreshTokenError, SessionChange,
     ruma::{
-        OwnedDeviceId, OwnedUserId,
+        OwnedDeviceId,
         api::{FeatureFlag, client::session::get_login_types::v3::LoginType, error::ErrorKind},
     },
 };
-use rand::distr::{Alphanumeric, SampleString};
-use std::{collections::HashMap, str::FromStr};
-use std::{fs, path::Path, path::PathBuf};
 use tokio::sync::{mpsc, oneshot};
 
 // The files in this folder contain all functions for authenticating a user. That includes loading necessary
@@ -42,70 +37,6 @@ use tokio::sync::{mpsc, oneshot};
 // SESSION STORING
 // store sessions in encrypted files (using age crate) and store identity to tht in keyring
 // user_ids are stored in unencrypted with information if its active or not
-
-// guard to clean up failed account creations
-struct AccountCreationGuard {
-    backup_path: PathBuf,
-    backup_created: bool,
-
-    users_path: PathBuf,
-
-    sqlite_path: PathBuf,
-    secure_path: PathBuf,
-
-    users_tmp_path: PathBuf,
-    secure_tmp_path: PathBuf,
-    backup_tmp_path: PathBuf,
-
-    keyring_entry: Entry,
-    keyring_created: bool,
-
-    committed: bool,
-}
-
-impl AccountCreationGuard {
-    fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for AccountCreationGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.secure_tmp_path);
-        let _ = fs::remove_file(&self.users_tmp_path);
-        let _ = fs::remove_file(&self.backup_tmp_path);
-
-        if self.committed {
-            return;
-        }
-
-        let _ = fs::remove_file(&self.secure_path);
-        let _ = fs::remove_dir_all(&self.sqlite_path);
-
-        if self.backup_created {
-            let _ = fs::rename(&self.backup_path, &self.users_path);
-        }
-
-        if self.keyring_created {
-            let _ = self.keyring_entry.delete_credential();
-        }
-    }
-}
-
-#[derive(Debug)]
-enum AccountResource {
-    Folder(String, PathBuf),
-    File(String, PathBuf),
-    KeyringEntry(String),
-    User(String),
-}
-
-const USER: u8 = 1 << 0;
-const FILE: u8 = 1 << 1;
-const FOLDER: u8 = 1 << 2;
-const KEYRING: u8 = 1 << 3;
-
-const ALL: u8 = USER | FILE | FOLDER | KEYRING;
 
 pub enum LoginChoice {
     /// Password login
@@ -211,19 +142,24 @@ pub async fn handle_refresh_tokens(
                                 .session_tokens()
                                 .expect("Client should be authenticated");
 
-                            match update_account_config(
-                                client
-                                    .user_id()
-                                    .expect("Client should be authenticated")
-                                    .as_str(),
-                                Some(tokens.access_token),
-                                Some(tokens.refresh_token),
-                            ) {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    let _ = tx.send(e).await;
+                            if let Ok(id) = storage::Core::user_id_to_id(
+                                client.user_id().expect("Client should be authenticated"),
+                            )
+                            .await
+                            {
+                                match storage::Core::update_tokens(
+                                    &id,
+                                    Some(tokens.access_token),
+                                    Some(tokens.refresh_token),
+                                )
+                                .await
+                                {
+                                    Ok(()) => {}
+                                    Err(e) => {
+                                        let _ = tx.send(anyhow::anyhow!(e)).await;
+                                    }
                                 }
-                            }
+                            };
                         }
                         Err(err) => {
                             // check for another soft logout/no available refresh token (exchange device id for new access token)
@@ -240,12 +176,13 @@ pub async fn handle_refresh_tokens(
                                 }
                             }
 
-                            remove_account(
-                                client
-                                    .user_id()
-                                    .expect("Client should be authenticated")
-                                    .as_str(),
-                            );
+                            if let Ok(id) = storage::Core::user_id_to_id(
+                                client.user_id().expect("Client should be authenticated"),
+                            )
+                            .await
+                            {
+                                storage::Core::remove(&id).await.ok();
+                            };
 
                             let _ = done_tx.send(Some(
                                 client
@@ -258,12 +195,13 @@ pub async fn handle_refresh_tokens(
                     }
                 } else {
                     // session destroyed, dont reuse
-                    remove_account(
-                        client
-                            .user_id()
-                            .expect("Client should be authenticated")
-                            .as_str(),
-                    );
+                    if let Ok(id) = storage::Core::user_id_to_id(
+                        client.user_id().expect("Client should be authenticated"),
+                    )
+                    .await
+                    {
+                        storage::Core::remove(&id).await.ok();
+                    };
 
                     let _ = done_tx.send(None);
                     return;
@@ -282,43 +220,24 @@ pub async fn handle_refresh_tokens(
 ///
 /// Can return `None` instead of a client when there is no active account
 pub async fn login() -> anyhow::Result<Option<Client>> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
+    storage::Core::cleanup().await;
 
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    let accounts = load_account_list(&users_path)?;
-    let Some(account_data) = active_account(&accounts.accounts) else {
+    let accounts = storage::Core::account_list().await?;
+    let Some(active) = accounts.active() else {
         return Ok(None);
     };
 
-    // define the paths once
-    let secure_path = account_path.join(format!("{}.enc", account_data.id));
-    let sqlite_path = account_path.join(&account_data.id);
-
-    let identity = load_x25519_identity(&account_data.id)?;
-
-    let secure_account_data = load_secure_account_data(&secure_path, &identity)?;
+    let (storage, account) = storage::Core::load(&active.id).await?;
 
     // construct the client
-    let client = Client::builder()
-        .server_name_or_homeserver_url(account_data.user_id.server_name())
-        .sqlite_store_with_config_and_cache_path(
-            SqliteStoreConfig::new(&sqlite_path)
-                .key(Some(identity.to_string().expose_secret().as_bytes())),
-            None::<PathBuf>,
-        )
+    let client = storage
+        .setup_matrix_store()
+        .server_name_or_homeserver_url(account.data.user_id.server_name())
         .build()
         .await?;
 
     // restore session from the unified account struct
-    client
-        .restore_session(Account {
-            data: account_data.clone(),
-            secure_data: secure_account_data,
-        })
-        .await?;
+    client.restore_session(account).await?;
 
     Ok(Some(client))
 }
@@ -335,32 +254,23 @@ pub async fn login_username(
     password: String,
     device_id: Option<OwnedDeviceId>,
 ) -> anyhow::Result<Client> {
-    // first remove possible leftovers
-    remove_orphaned_accounts();
-
-    // get id and identity
-    let (id, identity) = generate_account_credentials();
-
-    // define paths
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-    let sqlite_path = account_path.join(&id);
+    let storage = storage::Core::new();
 
     // construct client
-    let client = Client::builder()
+    let client = storage
+        .setup_matrix_store()
         .server_name_or_homeserver_url(homeserver)
-        .sqlite_store_with_config_and_cache_path(
-            SqliteStoreConfig::new(&sqlite_path)
-                .key(Some(identity.to_string().expose_secret().as_bytes())),
-            None::<PathBuf>,
-        )
         .build()
         .await?;
 
     let mut login_builder = client
         .matrix_auth()
         .login_username(&username, &password)
-        .initial_device_display_name(&utils::unwrap_lock(&INITIAL_DEVICE_NAME))
+        .initial_device_display_name(
+            INITIAL_DEVICE_NAME
+                .get()
+                .expect("initial device name should be initialized"),
+        )
         .request_refresh_token();
 
     if let Some(device_id) = device_id {
@@ -378,10 +288,7 @@ pub async fn login_username(
         None,
     );
 
-    tokio::task::spawn_blocking(move || {
-        save_new_account(&id, response.user_id, &secure_data, identity)
-    })
-    .await??;
+    storage.save(&response.user_id, &secure_data).await?;
 
     Ok(client)
 }
@@ -440,7 +347,13 @@ pub mod oauth {
         );
 
         ClientMetadata {
-            client_name: Some(Localized::new(utils::unwrap_lock(&INITIAL_DEVICE_NAME), [])),
+            client_name: Some(Localized::new(
+                INITIAL_DEVICE_NAME
+                    .get()
+                    .expect("initial device name should be initialized")
+                    .clone(),
+                [],
+            )),
             // TODO: possibly add policy and tos uri?
             policy_uri: None,
             tos_uri: None,
@@ -466,22 +379,12 @@ pub mod oauth {
         device_id: Option<OwnedDeviceId>,
         tx: mpsc::UnboundedSender<String>,
     ) -> anyhow::Result<Client> {
-        remove_orphaned_accounts();
-
-        let (id, identity) = generate_account_credentials();
-
-        let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-        let sqlite_path = account_path.join(&id);
+        let storage = storage::Core::new();
 
         // construct the client
-        let client = Client::builder()
+        let client = storage
+            .setup_matrix_store()
             .server_name_or_homeserver_url(homeserver)
-            .sqlite_store_with_config_and_cache_path(
-                SqliteStoreConfig::new(&sqlite_path)
-                    .key(Some(identity.to_string().expose_secret().as_bytes())),
-                None::<PathBuf>,
-            )
             .build()
             .await?;
 
@@ -534,22 +437,16 @@ pub mod oauth {
             Some(session.client_id),
         );
 
-        tokio::task::spawn_blocking(move || {
-            save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
-        })
-        .await??;
+        storage
+            .save(&session.user.meta.user_id, &secure_data)
+            .await?;
 
         Ok(client)
     }
 
     pub mod qr {
-        use camera::{
-            CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
-        };
-        use image::{DynamicImage, RgbImage};
         use matrix_sdk::authentication::oauth::qrcode::{
-            GeneratedQrProgress, LoginProgress, Msc4108IntentData, QrCodeData, QrCodeIntentData,
-            QrProgress, SenderError,
+            GeneratedQrProgress, LoginProgress, SenderError,
         };
         use matrix_sdk::stream::StreamExt;
         use qrcode_generator::{Renderer, qr::Encoder};
@@ -579,22 +476,12 @@ pub mod oauth {
             tx: mpsc::UnboundedSender<GeneratedQrState>,
             mut rx: mpsc::UnboundedReceiver<u8>,
         ) -> anyhow::Result<Client> {
-            remove_orphaned_accounts();
-
-            let (id, identity) = generate_account_credentials();
-
-            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-            let sqlite_path = account_path.join(&id);
+            let storage = storage::Core::new();
 
             // construct the client
-            let client = Client::builder()
+            let client = storage
+                .setup_matrix_store()
                 .server_name_or_homeserver_url(homeserver)
-                .sqlite_store_with_config_and_cache_path(
-                    SqliteStoreConfig::new(&sqlite_path)
-                        .key(Some(identity.to_string().expose_secret().as_bytes())),
-                    None::<PathBuf>,
-                )
                 .build()
                 .await?;
 
@@ -662,10 +549,9 @@ pub mod oauth {
                 Some(session.client_id),
             );
 
-            tokio::task::spawn_blocking(move || {
-                save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
-            })
-            .await??;
+            storage
+                .save(&session.user.meta.user_id, &secure_data)
+                .await?;
 
             Ok(client)
         }
@@ -685,14 +571,17 @@ pub mod oauth {
         ///
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
-            remove_orphaned_accounts();
+            use camera::{
+                CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
+            };
+            use image::{DynamicImage, RgbImage};
+            use matrix_sdk::authentication::oauth::qrcode::{
+                Msc4108IntentData, QrCodeData, QrCodeIntentData, QrProgress,
+            };
 
-            let (id, identity) = generate_account_credentials();
-
-            let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-            let sqlite_path = account_path.join(&id);
+            let storage = storage::Core::new();
 
             let system = CameraSystem::new();
             let mut capture = system
@@ -755,13 +644,9 @@ pub mod oauth {
             };
 
             // construct the client
-            let client = Client::builder()
+            let client = storage
+                .setup_matrix_store()
                 .server_name_or_homeserver_url(server_name)
-                .sqlite_store_with_config_and_cache_path(
-                    SqliteStoreConfig::new(&sqlite_path)
-                        .key(Some(identity.to_string().expose_secret().as_bytes())),
-                    None::<PathBuf>,
-                )
                 .build()
                 .await?;
 
@@ -804,301 +689,11 @@ pub mod oauth {
                 Some(session.client_id),
             );
 
-            tokio::task::spawn_blocking(move || {
-                save_new_account(&id, session.user.meta.user_id, &secure_data, identity)
-            })
-            .await??;
+            storage
+                .save(&session.user.meta.user_id, &secure_data)
+                .await?;
 
             Ok(client)
         }
     }
-}
-
-fn remove_orphaned_accounts() {
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    if !users_path.exists() {
-        return;
-    }
-
-    // - collect vector of:
-    //  - sqlite folders
-    //  - encrypted files
-    //  - accounts
-    //  - keyring entries
-    let mut resources = Vec::new();
-
-    // get the user list
-    let Ok(toml_account_data) = fs::read_to_string(&users_path) else {
-        return;
-    };
-
-    let mut accounts: AccountList = match toml::from_str(&toml_account_data) {
-        Ok(data) => data,
-        Err(_) => return,
-    };
-
-    resources.extend(
-        accounts
-            .accounts
-            .iter()
-            .map(|account| AccountResource::User(account.id.clone())),
-    );
-
-    for entry in match fs::read_dir(&account_path) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    }
-    .flatten()
-    {
-        // collect everything into resources vec
-        let path = entry.path();
-
-        // filter out only the folders
-        if path.is_dir()
-            && let Some(name) = entry.file_name().to_str().map(str::to_owned)
-        {
-            resources.push(AccountResource::Folder(name, path.clone()));
-        }
-
-        // filter out only the files except the users.toml file (so it doesnt get deleted)
-        if path.is_file()
-            && path != users_path
-            && let Some(name) = path.file_prefix().unwrap().to_str().map(str::to_owned)
-        {
-            resources.push(AccountResource::File(name, path));
-        }
-    }
-
-    match Entry::search(&[("service", APP_NAME)].into()) {
-        Ok(entries) => resources.extend(
-            entries
-                .iter()
-                .filter_map(|entry| Some(AccountResource::KeyringEntry(entry.get_specifiers()?.1))),
-        ),
-        Err(_) => return,
-    }
-
-    // all values in resource vector now
-
-    // hashmap of all seen (if all are seen: 1111, each bit represents one variant seen)
-    let mut seen: HashMap<&str, u8> = HashMap::new();
-
-    for resource in &resources {
-        let (name, bit) = match resource {
-            AccountResource::User(s) => (s.as_str(), USER),
-            AccountResource::File(s, _) => (s.as_str(), FILE),
-            AccountResource::Folder(s, _) => (s.as_str(), FOLDER),
-            AccountResource::KeyringEntry(s) => (s.as_str(), KEYRING),
-        };
-
-        *seen.entry(name).or_default() |= bit;
-    }
-
-    for resource in &resources {
-        let name = match resource {
-            AccountResource::User(s)
-            | AccountResource::File(s, _)
-            | AccountResource::Folder(s, _)
-            | AccountResource::KeyringEntry(s) => s.as_str(),
-        };
-
-        if let Some(mask) = seen.get(name)
-            && *mask != ALL
-        {
-            match resource {
-                AccountResource::File(_, path) => {
-                    // delete file
-                    fs::remove_file(path).ok();
-                }
-
-                AccountResource::Folder(_, path) => {
-                    // delete folder
-                    fs::remove_dir_all(path).ok();
-                }
-
-                AccountResource::KeyringEntry(name) => {
-                    // delete keyring entry
-                    let Ok(entry) = Entry::new(APP_NAME, name) else {
-                        return;
-                    };
-                    entry.delete_credential().ok();
-                }
-
-                AccountResource::User(s) => {
-                    // remove user from users.toml
-                    accounts.accounts.retain(|account| &account.id != s);
-                }
-            }
-        }
-    }
-
-    let Ok(toml_account_data) = toml::to_string(&accounts) else {
-        return;
-    };
-
-    fs::write(&users_path, toml_account_data).ok();
-}
-
-fn update_account_config(
-    user_id: &str,
-    access_token: Option<String>,
-    refresh_token: Option<Option<String>>,
-) -> anyhow::Result<()> {
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-    let users_path = account_path.join("users.toml");
-
-    let accounts = load_account_list(&users_path)?;
-
-    let id = accounts
-        .accounts
-        .iter()
-        .find(|account| account.user_id == user_id)
-        .ok_or_else(|| anyhow::anyhow!("User not found: {}", user_id))?
-        .id
-        .clone();
-
-    let secure_path = account_path.join(format!("{}.enc", id));
-
-    let identity = load_x25519_identity(&id)?;
-
-    let mut secure_data = load_secure_account_data(&secure_path, &identity)?;
-
-    if let Some(access_token) = access_token {
-        secure_data.access_token = access_token;
-    }
-    if let Some(refresh_token) = refresh_token {
-        secure_data.refresh_token = refresh_token;
-    }
-
-    // secure_data struct -> toml
-    let serialized = toml::to_string(&secure_data)?;
-
-    // encrypt secure data
-    let encrypted_bytes = age::encrypt(&identity.to_public(), serialized.as_bytes())?;
-
-    // write bytes to encrypted file
-    atomic_write(&secure_path, &encrypted_bytes)?;
-
-    Ok(())
-}
-
-fn atomic_write<C: AsRef<[u8]>>(target: &Path, contents: C) -> anyhow::Result<()> {
-    let tmp = target.with_extension("tmp");
-    fs::write(&tmp, contents)?;
-    fs::rename(&tmp, target)?;
-    Ok(())
-}
-
-fn load_secure_account_data(path: &Path, identity: &Identity) -> anyhow::Result<SecureAccountData> {
-    // load encrypted file contents
-    let data = fs::read(path)?;
-
-    let decrypted_bytes = age::decrypt(identity, &data)?;
-    toml::from_slice(&decrypted_bytes).map_err(|e| anyhow::anyhow!(e))
-}
-
-fn load_x25519_identity(id: &str) -> anyhow::Result<Identity> {
-    let entry = Entry::new(APP_NAME, id)?;
-    let raw = entry.get_password()?;
-    Identity::from_str(raw.trim())
-        .map_err(|err| anyhow::anyhow!("account {id} has no usable age identity: {err}"))
-}
-
-fn generate_account_credentials() -> (String, Identity) {
-    let mut rng = rand::rng();
-    // generate id for usage on sqlite store and other files
-    let id = Alphanumeric.sample_string(&mut rng, 32);
-    // generate x25519 identity for sqlite store and encrypted files
-    let identity = Identity::generate();
-    (id, identity)
-}
-
-fn save_new_account(
-    id: &str,
-    user_id: OwnedUserId,
-    secure_data: &SecureAccountData,
-
-    identity: Identity,
-) -> anyhow::Result<()> {
-    let account_path = utils::unwrap_lock(&ACCOUNT_PATH);
-
-    let backup_path = account_path.join("users.toml.backup");
-    let users_path = account_path.join("users.toml");
-    let secure_path = account_path.join(format!("{id}.enc"));
-    let sqlite_path = account_path.join(id);
-
-    // secure_data struct -> toml
-    let serialized = toml::to_string(secure_data)?;
-
-    // encrypt secure data
-    let encrypted_bytes = age::encrypt(&identity.to_public(), serialized.as_bytes())?;
-
-    let entry = Entry::new(APP_NAME, id)?;
-
-    // create guard as soon as possible
-    let mut guard = AccountCreationGuard {
-        backup_path: backup_path.clone(),
-        backup_tmp_path: backup_path.with_extension("tmp").clone(),
-        backup_created: false,
-
-        users_path: users_path.clone(),
-
-        sqlite_path: sqlite_path.clone(),
-        secure_path: secure_path.clone(),
-
-        users_tmp_path: users_path.with_extension("tmp").clone(),
-        secure_tmp_path: secure_path.with_extension("tmp").clone(),
-
-        keyring_entry: entry,
-        keyring_created: false,
-
-        committed: false,
-    };
-
-    // read unencrypted file with all users
-    let mut accounts: AccountList = if users_path.exists() {
-        let toml_account_data = fs::read_to_string(&users_path)?;
-        toml::from_str(&toml_account_data)?
-    } else {
-        AccountList::default()
-    };
-
-    // create backup of accounts
-    let toml_account_data = toml::to_string(&accounts)?;
-    atomic_write(&backup_path, &toml_account_data)?;
-
-    guard.backup_created = true;
-
-    // set all accounts active to false (for the new account to be active)
-    accounts.accounts.iter_mut().for_each(|a| a.active = false);
-
-    // add new account to vector
-    accounts.accounts.push(AccountData {
-        id: id.to_string(),
-        user_id,
-        active: true,
-    });
-
-    let toml_account_data = toml::to_string(&accounts)?;
-
-    // write bytes to encrypted file
-    atomic_write(&secure_path, &encrypted_bytes)?;
-
-    // write unencrypted file
-    atomic_write(&users_path, toml_account_data)?;
-
-    // save identity to keyring (used for file encryption and db encryption)
-    guard
-        .keyring_entry
-        .set_password(identity.to_string().expose_secret())?;
-
-    guard.keyring_created = true;
-
-    let _ = fs::remove_file(&backup_path);
-
-    guard.commit();
-
-    Ok(())
 }
