@@ -112,7 +112,7 @@ pub fn LoginScreen() -> Element {
             match handle.await {
                 Ok(Ok(choices)) => {
                     if choices.is_empty() {
-                        error.set(Some("Homeserver not supported (requires SSO or an unsupported login method)".to_string()))
+                        error.set(Some("Homeserver not supported (requires SSO or an unsupported login method)".to_string()));
                     } else {
                         login_choices.set(Some(choices));
                         current_stage.set(LoginStage::Credentials);
