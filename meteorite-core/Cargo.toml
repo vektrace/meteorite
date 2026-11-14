@@ -45,3 +45,6 @@ apple-native-keyring-store = { version = "1.0.0", features = ["protected"] }
 [target.'cfg(target_os = "android")'.dependencies]
 sysdirs = { version = "0.10.2", features = ["android-auto"] }
 android-native-keyring-store = "1.0.0"
+
+[lints]
+workspace = true
