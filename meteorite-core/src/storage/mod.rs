@@ -46,17 +46,17 @@ pub(crate) enum StorageError {
 
 pub(crate) trait StorageApi: Sized {
     fn new() -> Self;
-    async fn load(id: &str) -> Result<(Self, Account)>;
-    async fn account_list() -> Result<AccountList>;
-    async fn remove(id: &str) -> Result<()>;
+    fn load(id: &str) -> Result<(Self, Account)>;
+    fn account_list() -> Result<AccountList>;
+    fn remove(id: &str) -> Result<()>;
     async fn cleanup();
-    async fn update_tokens(
+    fn update_tokens(
         id: &str,
         access_token: Option<String>,
         refresh_token: Option<Option<String>>,
     ) -> Result<()>;
-    async fn user_id_to_id(user_id: &UserId) -> Result<String>;
-    async fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()>;
+    fn user_id_to_id(user_id: &UserId) -> Result<String>;
+    fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()>;
     fn setup_matrix_store(&self) -> ClientBuilder;
 }
 
@@ -69,31 +69,31 @@ impl StorageApi for Core {
         let backend = Impl::new();
         Self { backend }
     }
-    async fn load(id: &str) -> Result<(Self, Account)> {
-        let backend = Impl::load(id).await?;
+    fn load(id: &str) -> Result<(Self, Account)> {
+        let backend = Impl::load(id)?;
         Ok((Self { backend: backend.0 }, backend.1))
     }
-    async fn account_list() -> Result<AccountList> {
-        Impl::account_list().await
+    fn account_list() -> Result<AccountList> {
+        Impl::account_list()
     }
-    async fn remove(id: &str) -> Result<()> {
-        Impl::remove(id).await
+    fn remove(id: &str) -> Result<()> {
+        Impl::remove(id)
     }
     async fn cleanup() {
         Impl::cleanup().await;
     }
-    async fn update_tokens(
+    fn update_tokens(
         id: &str,
         access_token: Option<String>,
         refresh_token: Option<Option<String>>,
     ) -> Result<()> {
-        Impl::update_tokens(id, access_token, refresh_token).await
+        Impl::update_tokens(id, access_token, refresh_token)
     }
-    async fn user_id_to_id(user_id: &UserId) -> Result<String> {
-        Impl::user_id_to_id(user_id).await
+    fn user_id_to_id(user_id: &UserId) -> Result<String> {
+        Impl::user_id_to_id(user_id)
     }
-    async fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()> {
-        self.backend.save(user_id, secure_data).await
+    fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()> {
+        self.backend.save(user_id, secure_data)
     }
     fn setup_matrix_store(&self) -> ClientBuilder {
         self.backend.setup_matrix_store()

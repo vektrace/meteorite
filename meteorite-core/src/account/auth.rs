@@ -100,7 +100,7 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
         types.push(LoginChoice::Oauth {
             preferred,
             supports_msc4108,
-        })
+        });
     }
 
     // ui has to handle empty types
@@ -137,29 +137,25 @@ pub async fn handle_refresh_tokens(
                 if data.soft_logout {
                     let res = client.refresh_access_token().await;
                     match res {
-                        Ok(_) => {
+                        Ok(()) => {
                             let tokens = client
                                 .session_tokens()
                                 .expect("Client should be authenticated");
 
                             if let Ok(id) = storage::Core::user_id_to_id(
                                 client.user_id().expect("Client should be authenticated"),
-                            )
-                            .await
-                            {
+                            ) {
                                 match storage::Core::update_tokens(
                                     &id,
                                     Some(tokens.access_token),
                                     Some(tokens.refresh_token),
-                                )
-                                .await
-                                {
+                                ) {
                                     Ok(()) => {}
                                     Err(e) => {
                                         let _ = tx.send(anyhow::anyhow!(e)).await;
                                     }
                                 }
-                            };
+                            }
                         }
                         Err(err) => {
                             // check for another soft logout/no available refresh token (exchange device id for new access token)
@@ -178,11 +174,9 @@ pub async fn handle_refresh_tokens(
 
                             if let Ok(id) = storage::Core::user_id_to_id(
                                 client.user_id().expect("Client should be authenticated"),
-                            )
-                            .await
-                            {
-                                storage::Core::remove(&id).await.ok();
-                            };
+                            ) {
+                                storage::Core::remove(&id).ok();
+                            }
 
                             let _ = done_tx.send(Some(
                                 client
@@ -197,11 +191,9 @@ pub async fn handle_refresh_tokens(
                     // session destroyed, dont reuse
                     if let Ok(id) = storage::Core::user_id_to_id(
                         client.user_id().expect("Client should be authenticated"),
-                    )
-                    .await
-                    {
-                        storage::Core::remove(&id).await.ok();
-                    };
+                    ) {
+                        storage::Core::remove(&id).ok();
+                    }
 
                     let _ = done_tx.send(None);
                     return;
@@ -222,12 +214,12 @@ pub async fn handle_refresh_tokens(
 pub async fn login() -> anyhow::Result<Option<Client>> {
     storage::Core::cleanup().await;
 
-    let accounts = storage::Core::account_list().await?;
+    let accounts = storage::Core::account_list()?;
     let Some(active) = accounts.active() else {
         return Ok(None);
     };
 
-    let (storage, account) = storage::Core::load(&active.id).await?;
+    let (storage, account) = storage::Core::load(&active.id)?;
 
     // construct the client
     let client = storage
@@ -288,7 +280,7 @@ pub async fn login_username(
         None,
     );
 
-    storage.save(&response.user_id, &secure_data).await?;
+    storage.save(&response.user_id, &secure_data)?;
 
     Ok(client)
 }
@@ -437,9 +429,7 @@ pub mod oauth {
             Some(session.client_id),
         );
 
-        storage
-            .save(&session.user.meta.user_id, &secure_data)
-            .await?;
+        storage.save(&session.user.meta.user_id, &secure_data)?;
 
         Ok(client)
     }
@@ -519,8 +509,8 @@ pub mod oauth {
                             };
 
                             match sender.send(check_code).await {
-                                Ok(()) | Err(SenderError::AlreadySent) => {}
-                                Err(SenderError::CannotSend) => {}
+                                Ok(())
+                                | Err(SenderError::AlreadySent | SenderError::CannotSend) => {}
                             }
                         }
                         LoginProgress::WaitingForToken { user_code } => {
@@ -549,9 +539,7 @@ pub mod oauth {
                 Some(session.client_id),
             );
 
-            storage
-                .save(&session.user.meta.user_id, &secure_data)
-                .await?;
+            storage.save(&session.user.meta.user_id, &secure_data)?;
 
             Ok(client)
         }
@@ -689,9 +677,7 @@ pub mod oauth {
                 Some(session.client_id),
             );
 
-            storage
-                .save(&session.user.meta.user_id, &secure_data)
-                .await?;
+            storage.save(&session.user.meta.user_id, &secure_data)?;
 
             Ok(client)
         }

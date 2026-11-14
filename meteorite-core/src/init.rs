@@ -38,7 +38,7 @@ pub fn setup_device_name() {
     };
 
     INITIAL_DEVICE_NAME
-        .set(format!("meteorite Client ({})", name))
+        .set(format!("meteorite Client ({name})"))
         .unwrap();
 }
 
@@ -70,16 +70,16 @@ pub fn setup_folders() {
         // should only panic if perms are set wrong
         fs::create_dir_all(&base_path).unwrap_or_else(|e| {
             panic!(
-                "failed to create application data directory {:?}: {e}",
-                base_path
+                "failed to create application data directory {}: {e}",
+                base_path.display()
             )
         });
     }
     if !account_path.exists() {
         fs::create_dir_all(&account_path).unwrap_or_else(|e| {
             panic!(
-                "failed to create application data directory {:?}: {e}",
-                account_path
+                "failed to create application data directory {}: {e}",
+                account_path.display()
             )
         });
     }

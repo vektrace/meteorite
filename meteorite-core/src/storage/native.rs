@@ -50,26 +50,6 @@ const KEYRING: u8 = 1 << 3;
 
 const ALL: u8 = USER | FILE | FOLDER | KEYRING;
 
-/*
-#[derive(Debug, Error)]
-pub(crate) enum BackendError {
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("toml serialize error: {0}")]
-    TomlSer(#[from] toml::ser::Error),
-    #[error("toml deserialize error: {0}")]
-    TomlDe(#[from] toml::de::Error),
-    #[error("encrypt error: {0}")]
-    Encrypt(#[from] age::EncryptError),
-    #[error("decrypt error: {0}")]
-    Decrypt(#[from] age::DecryptError),
-    #[error("identity parse error: {0}")]
-    IdentityParse(&'static str),
-    #[error("keyring error: {0}")]
-    Keyring(#[from] keyring_core::Error),
-}
-*/
-
 /// Implementation of the storage API for native targets (mobile, desktop).
 pub(crate) struct Native {
     identity: Identity,
@@ -83,16 +63,16 @@ impl StorageApi for Native {
         let id = Alphanumeric.sample_string(&mut rng, 32);
         // generate x25519 identity
         let identity = Identity::generate();
-        Self { id, identity }
+        Self { identity, id }
     }
 
-    async fn load(id: &str) -> Result<(Self, Account)> {
+    fn load(id: &str) -> Result<(Self, Account)> {
         let account_path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized");
-        let secure_path = account_path.join(format!("{}.enc", id));
+        let secure_path = account_path.join(format!("{id}.enc"));
 
-        let accounts: Vec<AccountData> = Self::account_list().await?.into();
+        let accounts: Vec<AccountData> = Self::account_list()?.into();
         let account_data = accounts
             .into_iter()
             .find(|a| a.id == id)
@@ -126,7 +106,7 @@ impl StorageApi for Native {
         ))
     }
 
-    async fn account_list() -> Result<AccountList> {
+    fn account_list() -> Result<AccountList> {
         let path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized")
@@ -141,16 +121,16 @@ impl StorageApi for Native {
     }
 
     /// Deletion on a best-effort basis
-    async fn remove(id: &str) -> Result<()> {
+    fn remove(id: &str) -> Result<()> {
         let account_path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized");
         let users_path = account_path.join("users.toml");
 
-        let mut accounts = Self::account_list().await?;
+        let mut accounts = Self::account_list()?;
 
         let dir_path = account_path.join(id);
-        let enc_path = account_path.join(format!("{}.enc", id));
+        let enc_path = account_path.join(format!("{id}.enc"));
 
         // should only fail on lacking perms
         // we ignore and keep going (best effort deletion)
@@ -193,7 +173,7 @@ impl StorageApi for Native {
         let mut resources = Vec::new();
 
         // get the user list
-        let Ok(mut accounts) = Self::account_list().await else {
+        let Ok(mut accounts) = Self::account_list() else {
             return;
         };
 
@@ -283,7 +263,7 @@ impl StorageApi for Native {
                     // delete keyring entry
                     if let Ok(entry) = Entry::new(APP_NAME, name) {
                         entry.delete_credential().ok();
-                    };
+                    }
                 }
 
                 AccountResource::User(_) => {
@@ -304,17 +284,17 @@ impl StorageApi for Native {
         atomic_write(&users_path, account_data).ok();
     }
 
-    async fn update_tokens(
+    fn update_tokens(
         id: &str,
         access_token: Option<String>,
         refresh_token: Option<Option<String>>,
     ) -> Result<()> {
-        let (backend, mut account) = Self::load(id).await?;
+        let (backend, mut account) = Self::load(id)?;
 
         let account_path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized");
-        let secure_path = account_path.join(format!("{}.enc", id));
+        let secure_path = account_path.join(format!("{id}.enc"));
 
         if let Some(access_token) = access_token {
             account.secure_data.access_token = access_token;
@@ -338,8 +318,8 @@ impl StorageApi for Native {
         Ok(())
     }
 
-    async fn user_id_to_id(user_id: &UserId) -> Result<String> {
-        let accounts: Vec<AccountData> = Self::account_list().await?.into();
+    fn user_id_to_id(user_id: &UserId) -> Result<String> {
+        let accounts: Vec<AccountData> = Self::account_list()?.into();
         Ok(accounts
             .into_iter()
             .find(|a| a.user_id == user_id)
@@ -347,7 +327,7 @@ impl StorageApi for Native {
             .id)
     }
 
-    async fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()> {
+    fn save(&self, user_id: &UserId, secure_data: &SecureAccountData) -> Result<()> {
         let account_path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized");
@@ -367,7 +347,7 @@ impl StorageApi for Native {
             Entry::new(APP_NAME, &self.id).map_err(|e| StorageError::Backend(Box::new(e)))?;
 
         // read unencrypted file with all users
-        let mut accounts = Self::account_list().await?;
+        let mut accounts = Self::account_list()?;
 
         // set all accounts active to false (for the new account to be active)
         accounts.accounts.iter_mut().for_each(|a| a.active = false);
