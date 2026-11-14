@@ -677,9 +677,7 @@ pub mod oauth {
                 Some(session.client_id),
             );
 
-            storage
-                .save(&session.user.meta.user_id, &secure_data)
-                .await?;
+            storage.save(&session.user.meta.user_id, &secure_data)?;
 
             Ok(client)
         }
