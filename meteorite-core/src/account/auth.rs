@@ -33,7 +33,7 @@ use matrix_sdk::{
         },
     },
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 
 // The files in this folder contain all functions for authenticating a user. That includes loading necessary
 // config files, getting passwords from keyring and using matrix sdks functions to send requests to
@@ -134,6 +134,8 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
 /// 1. prompted to switch account
 /// 2. brought back to the login screen.
 ///
+/// The caller is expected to spawn this future.
+///
 /// Returns the `OwnedDeviceId` of the discarded session if soft-logout could not be recovered (no
 /// usable refresh token), so the user can be logged back in with the same device id instead of
 /// creating a new one.
@@ -141,83 +143,73 @@ pub async fn handle_refresh_tokens(
     client: Client,
     tx: mpsc::Sender<anyhow::Error>,
 ) -> Option<OwnedDeviceId> {
-    let client = client.clone();
     let mut session_change_stream = client.subscribe_to_session_changes();
 
-    let (done_tx, done_rx) = oneshot::channel();
+    fn remove_account(client: &Client) {
+        let user_id = client.user_id().expect("Client should be authenticated");
+        if let Ok(id) = storage::Core::user_id_to_id(user_id) {
+            storage::Core::remove(&id).ok();
+        }
+    }
 
-    tokio::spawn(async move {
-        while let Ok(change) = session_change_stream.recv().await {
-            if let SessionChange::UnknownToken(data) = change {
-                if data.soft_logout {
-                    let res = client.refresh_access_token().await;
-                    match res {
-                        Ok(()) => {
-                            let tokens = client
-                                .session_tokens()
-                                .expect("Client should be authenticated");
+    loop {
+        let change = match session_change_stream.recv().await {
+            Ok(change) => change,
+            // fell behind
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            // client is gone
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
 
-                            if let Ok(id) = storage::Core::user_id_to_id(
-                                client.user_id().expect("Client should be authenticated"),
-                            ) {
-                                match storage::Core::update_tokens(
-                                    &id,
-                                    Some(tokens.access_token),
-                                    Some(tokens.refresh_token),
-                                ) {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        let _ = tx.send(anyhow::anyhow!(e)).await;
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            // check for another soft logout/no available refresh token (exchange device id for new access token)
-                            match err {
-                                RefreshTokenError::RefreshTokenRequired => {}
-                                RefreshTokenError::MatrixAuth(http_error)
-                                    if matches!(
-                                        http_error.client_api_error_kind(),
-                                        Some(ErrorKind::UnknownToken(_))
-                                    ) => {}
-                                err => {
-                                    let _ = tx.send(err.into()).await;
-                                    return;
-                                }
-                            }
+        let SessionChange::UnknownToken(data) = change else {
+            continue;
+        };
 
-                            if let Ok(id) = storage::Core::user_id_to_id(
-                                client.user_id().expect("Client should be authenticated"),
-                            ) {
-                                storage::Core::remove(&id).ok();
-                            }
+        if !data.soft_logout {
+            remove_account(&client);
+            return None;
+        }
 
-                            let _ = done_tx.send(Some(
-                                client
-                                    .device_id()
-                                    .expect("Client should be authenticated")
-                                    .into(),
-                            ));
-                            return;
-                        }
-                    }
-                } else {
-                    // session destroyed, dont reuse
-                    if let Ok(id) = storage::Core::user_id_to_id(
-                        client.user_id().expect("Client should be authenticated"),
-                    ) {
-                        storage::Core::remove(&id).ok();
-                    }
+        match client.refresh_access_token().await {
+            Ok(()) => {
+                let tokens = client
+                    .session_tokens()
+                    .expect("Client should be authenticated");
 
-                    let _ = done_tx.send(None);
-                    return;
+                if let Ok(id) = storage::Core::user_id_to_id(
+                    client.user_id().expect("Client should be authenticated"),
+                ) && let Err(e) = storage::Core::update_tokens(
+                    &id,
+                    Some(tokens.access_token),
+                    Some(tokens.refresh_token),
+                ) {
+                    tx.send(anyhow::anyhow!(e)).await.ok();
                 }
             }
-        }
-    });
+            Err(err) => {
+                // check for another soft logout/no available refresh token (exchange device id for new access token)
+                match err {
+                    RefreshTokenError::RefreshTokenRequired => {}
+                    RefreshTokenError::MatrixAuth(http_error)
+                        if matches!(
+                            http_error.client_api_error_kind(),
+                            Some(ErrorKind::UnknownToken(_))
+                        ) => {}
+                    err => {
+                        tx.send(err.into()).await.ok();
+                        return None;
+                    }
+                }
 
-    done_rx.await.ok().flatten()
+                remove_account(&client);
+                let device_id = client
+                    .device_id()
+                    .expect("Client should be authenticated")
+                    .into();
+                return Some(device_id);
+            }
+        }
+    }
 }
 
 /// Tries to log the user into the currently active account.
