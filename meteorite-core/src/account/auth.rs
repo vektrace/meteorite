@@ -451,7 +451,7 @@ pub mod oauth {
 
     pub mod qr {
         use matrix_sdk::authentication::oauth::qrcode::{
-            GeneratedQrProgress, LoginProgress, SenderError,
+            CheckCodeSender, GeneratedQrProgress, LoginProgress,
         };
         use matrix_sdk::stream::StreamExt;
         use qrcode_generator::{Renderer, qr::Encoder};
@@ -478,8 +478,8 @@ pub mod oauth {
         /// On success, an authenticated Client is returned.
         pub async fn display(
             homeserver: String,
-            tx: mpsc::UnboundedSender<GeneratedQrState>,
-            mut rx: mpsc::UnboundedReceiver<u8>,
+            state_tx: mpsc::UnboundedSender<GeneratedQrState>,
+            mut check_code_rx: mpsc::UnboundedReceiver<u8>,
         ) -> anyhow::Result<Client> {
             let storage = storage::Core::new();
 
@@ -494,10 +494,22 @@ pub mod oauth {
             let oauth = client.oauth();
             let login_client = oauth.login_with_qr_code(Some(&metadata)).generate();
             let mut subscriber = login_client.subscribe_to_progress();
+            let mut login = login_client.into_future();
+            let mut sender: Option<CheckCodeSender> = None;
 
-            let task = tokio::spawn(async move {
-                while let Some(state) = subscriber.next().await {
-                    match state {
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    res = &mut login => break res.map_err(anyhow::Error::from),
+                    code = check_code_rx.recv(), if sender.is_some() => {
+                        let Some(s) = sender.take() else { continue };
+                        match code {
+                            Some(code) => { s.send(code).await.ok(); }
+                            // caller dropped check_code_tx
+                            None => break Err(anyhow::anyhow!("check code channel closed")),
+                        }
+                    }
+                    Some(state) = subscriber.next() => match state {
                         LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
                         LoginProgress::EstablishingSecureChannel(GeneratedQrProgress::QrReady(
                             data,
@@ -512,32 +524,24 @@ pub mod oauth {
                                 .to_svg_string(None::<String>)
                                 .unwrap();
 
-                            tx.send(GeneratedQrState::WaitingForScan(data)).ok();
+                            state_tx.send(GeneratedQrState::WaitingForScan(data)).ok();
                         }
                         LoginProgress::EstablishingSecureChannel(
-                            GeneratedQrProgress::QrScanned(sender),
+                            GeneratedQrProgress::QrScanned(s),
                         ) => {
-                            tx.send(GeneratedQrState::WaitingForCheckCode).ok();
-                            let Some(check_code) = rx.recv().await else {
-                                // Login cancelled or something else happened
-                                break;
-                            };
+                            state_tx.send(GeneratedQrState::WaitingForCheckCode).ok();
 
-                            match sender.send(check_code).await {
-                                Ok(())
-                                | Err(SenderError::AlreadySent | SenderError::CannotSend) => {}
-                            }
+                            sender = Some(s);
                         }
                         LoginProgress::WaitingForToken { user_code } => {
-                            tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
+                            state_tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
                         }
-                        LoginProgress::Done => break,
+                        LoginProgress::Done => (),
                     }
                 }
-            });
+            };
 
-            let result = login_client.await;
-            task.abort();
+            drop(login);
 
             result?;
 
@@ -575,7 +579,7 @@ pub mod oauth {
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
+        pub async fn scan(state_tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
             use camera::{
                 CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
             };
@@ -593,7 +597,7 @@ pub mod oauth {
                 .start()
                 .await?;
 
-            tx.send(QrState::WaitingForScan).ok();
+            state_tx.send(QrState::WaitingForScan).ok();
 
             let decoded = loop {
                 let Ok(frame) = capture.next_frame().await else {
@@ -658,24 +662,26 @@ pub mod oauth {
 
             let login_client = oauth.login_with_qr_code(Some(&metadata)).scan(&qr_data);
             let mut subscriber = login_client.subscribe_to_progress();
+            let mut login = login_client.into_future();
 
-            let task = tokio::spawn(async move {
-                while let Some(state) = subscriber.next().await {
-                    match state {
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    res = &mut login => break res,
+                    Some(state) = subscriber.next() => match state {
                         LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
                         LoginProgress::EstablishingSecureChannel(QrProgress { check_code }) => {
-                            tx.send(QrState::InputCheckCode(check_code)).ok();
+                            state_tx.send(QrState::InputCheckCode(check_code)).ok();
                         }
                         LoginProgress::WaitingForToken { user_code } => {
-                            tx.send(QrState::WaitingForToken(user_code)).ok();
+                            state_tx.send(QrState::WaitingForToken(user_code)).ok();
                         }
-                        LoginProgress::Done => break,
+                        LoginProgress::Done => (),
                     }
                 }
-            });
+            };
 
-            let result = login_client.await;
-            task.abort();
+            drop(login);
 
             result?;
 
