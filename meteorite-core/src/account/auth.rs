@@ -23,9 +23,14 @@ use crate::{
 };
 use matrix_sdk::{
     Client, RefreshTokenError, SessionChange,
+    reqwest::StatusCode,
     ruma::{
         OwnedDeviceId,
-        api::{FeatureFlag, client::session::get_login_types::v3::LoginType, error::ErrorKind},
+        api::{
+            FeatureFlag,
+            client::session::get_login_types::v3::{LoginType, Response},
+            error::ErrorKind,
+        },
     },
 };
 use tokio::sync::{mpsc, oneshot};
@@ -64,7 +69,6 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
         .await?;
 
     let mut types = Vec::new();
-    let login_types = client.matrix_auth().get_login_types().await?.flows;
 
     let oauth_supported = if let Err(err) = client.oauth().server_metadata().await {
         if err.is_not_supported() {
@@ -81,24 +85,35 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
         .await?
         .contains(&FeatureFlag::Msc4108);
 
-    if login_types
-        .iter()
-        .any(|t| matches!(t, LoginType::Password(_)))
-    {
-        types.push(LoginChoice::Password);
-    }
+    let oauth_preferred = match client.matrix_auth().get_login_types().await {
+        Ok(Response { flows, .. }) => {
+            if flows.iter().any(|t| matches!(t, LoginType::Password(_))) {
+                types.push(LoginChoice::Password);
+            }
+
+            flows
+                .iter()
+                .find_map(|t| match t {
+                    LoginType::Sso(sso) => Some(sso.oauth_aware_preferred),
+                    _ => None,
+                })
+                .unwrap_or(false)
+        }
+        Err(e) => {
+            if let Some(e) = e.as_client_api_error()
+                && e.status_code == StatusCode::NOT_FOUND
+            {
+                // Only OAuth is supported by the homeserver
+                false
+            } else {
+                return Err(e.into());
+            }
+        }
+    };
 
     if oauth_supported {
-        let preferred = login_types
-            .iter()
-            .find_map(|t| match t {
-                LoginType::Sso(sso) => Some(sso.oauth_aware_preferred),
-                _ => None,
-            })
-            .unwrap_or(false);
-
         types.push(LoginChoice::Oauth {
-            preferred,
+            preferred: oauth_preferred,
             supports_msc4108,
         });
     }
