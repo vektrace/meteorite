@@ -302,9 +302,8 @@ pub async fn login_username(
 
 pub mod oauth {
     use matrix_sdk::{
-        authentication::oauth::{
-            CsrfToken, OAuthAuthorizationData,
-            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+        authentication::oauth::registration::{
+            ApplicationType, ClientMetadata, Localized, OAuthGrantType,
         },
         reqwest::Url,
         ruma::serde::Raw,
@@ -313,34 +312,6 @@ pub mod oauth {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
-
-    struct OAuthLoginGuard {
-        client: Option<Client>,
-        state: Option<CsrfToken>,
-    }
-
-    impl OAuthLoginGuard {
-        fn new(client: Client) -> Self {
-            Self {
-                client: Some(client),
-                state: None,
-            }
-        }
-
-        fn arm(&mut self, data: &OAuthAuthorizationData) {
-            self.state = Some(data.state.clone());
-        }
-    }
-
-    impl Drop for OAuthLoginGuard {
-        fn drop(&mut self) {
-            if let (Some(client), Some(state)) = (self.client.take(), self.state.take())
-                && let Ok(handle) = tokio::runtime::Handle::try_current()
-            {
-                handle.spawn(async move { client.oauth().abort_login(&state).await });
-            }
-        }
-    }
 
     fn metadata() -> ClientMetadata {
         let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
@@ -399,14 +370,11 @@ pub mod oauth {
 
         let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
 
-        let mut guard = OAuthLoginGuard::new(client.clone());
-
         let data = client
             .oauth()
             .login(redirect_uri, device_id, Some(metadata.into()), None)
             .build()
             .await?;
-        guard.arm(&data);
 
         let query_string = {
             if webbrowser::open(data.url.as_str()).is_ok() {
@@ -428,6 +396,8 @@ pub mod oauth {
         };
 
         if let Err(err) = client.oauth().finish_login(query_string.into()).await {
+            client.oauth().abort_login(&data.state).await;
+
             anyhow::bail!("Error: failed to login: {err}");
         }
 
