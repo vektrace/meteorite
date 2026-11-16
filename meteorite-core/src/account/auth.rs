@@ -33,7 +33,7 @@ use matrix_sdk::{
         },
     },
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 
 // The files in this folder contain all functions for authenticating a user. That includes loading necessary
 // config files, getting passwords from keyring and using matrix sdks functions to send requests to
@@ -134,6 +134,8 @@ pub async fn get_login_types(homeserver: String) -> anyhow::Result<Vec<LoginChoi
 /// 1. prompted to switch account
 /// 2. brought back to the login screen.
 ///
+/// The caller is expected to spawn this future.
+///
 /// Returns the `OwnedDeviceId` of the discarded session if soft-logout could not be recovered (no
 /// usable refresh token), so the user can be logged back in with the same device id instead of
 /// creating a new one.
@@ -141,83 +143,73 @@ pub async fn handle_refresh_tokens(
     client: Client,
     tx: mpsc::Sender<anyhow::Error>,
 ) -> Option<OwnedDeviceId> {
-    let client = client.clone();
     let mut session_change_stream = client.subscribe_to_session_changes();
 
-    let (done_tx, done_rx) = oneshot::channel();
+    fn remove_account(client: &Client) {
+        let user_id = client.user_id().expect("Client should be authenticated");
+        if let Ok(id) = storage::Core::user_id_to_id(user_id) {
+            storage::Core::remove(&id).ok();
+        }
+    }
 
-    tokio::spawn(async move {
-        while let Ok(change) = session_change_stream.recv().await {
-            if let SessionChange::UnknownToken(data) = change {
-                if data.soft_logout {
-                    let res = client.refresh_access_token().await;
-                    match res {
-                        Ok(()) => {
-                            let tokens = client
-                                .session_tokens()
-                                .expect("Client should be authenticated");
+    loop {
+        let change = match session_change_stream.recv().await {
+            Ok(change) => change,
+            // fell behind
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            // client is gone
+            Err(broadcast::error::RecvError::Closed) => return None,
+        };
 
-                            if let Ok(id) = storage::Core::user_id_to_id(
-                                client.user_id().expect("Client should be authenticated"),
-                            ) {
-                                match storage::Core::update_tokens(
-                                    &id,
-                                    Some(tokens.access_token),
-                                    Some(tokens.refresh_token),
-                                ) {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        let _ = tx.send(anyhow::anyhow!(e)).await;
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            // check for another soft logout/no available refresh token (exchange device id for new access token)
-                            match err {
-                                RefreshTokenError::RefreshTokenRequired => {}
-                                RefreshTokenError::MatrixAuth(http_error)
-                                    if matches!(
-                                        http_error.client_api_error_kind(),
-                                        Some(ErrorKind::UnknownToken(_))
-                                    ) => {}
-                                err => {
-                                    let _ = tx.send(err.into()).await;
-                                    return;
-                                }
-                            }
+        let SessionChange::UnknownToken(data) = change else {
+            continue;
+        };
 
-                            if let Ok(id) = storage::Core::user_id_to_id(
-                                client.user_id().expect("Client should be authenticated"),
-                            ) {
-                                storage::Core::remove(&id).ok();
-                            }
+        if !data.soft_logout {
+            remove_account(&client);
+            return None;
+        }
 
-                            let _ = done_tx.send(Some(
-                                client
-                                    .device_id()
-                                    .expect("Client should be authenticated")
-                                    .into(),
-                            ));
-                            return;
-                        }
-                    }
-                } else {
-                    // session destroyed, dont reuse
-                    if let Ok(id) = storage::Core::user_id_to_id(
-                        client.user_id().expect("Client should be authenticated"),
-                    ) {
-                        storage::Core::remove(&id).ok();
-                    }
+        match client.refresh_access_token().await {
+            Ok(()) => {
+                let tokens = client
+                    .session_tokens()
+                    .expect("Client should be authenticated");
 
-                    let _ = done_tx.send(None);
-                    return;
+                if let Ok(id) = storage::Core::user_id_to_id(
+                    client.user_id().expect("Client should be authenticated"),
+                ) && let Err(e) = storage::Core::update_tokens(
+                    &id,
+                    Some(tokens.access_token),
+                    Some(tokens.refresh_token),
+                ) {
+                    tx.send(anyhow::anyhow!(e)).await.ok();
                 }
             }
-        }
-    });
+            Err(err) => {
+                // check for another soft logout/no available refresh token (exchange device id for new access token)
+                match err {
+                    RefreshTokenError::RefreshTokenRequired => {}
+                    RefreshTokenError::MatrixAuth(http_error)
+                        if matches!(
+                            http_error.client_api_error_kind(),
+                            Some(ErrorKind::UnknownToken(_))
+                        ) => {}
+                    err => {
+                        tx.send(err.into()).await.ok();
+                        return None;
+                    }
+                }
 
-    done_rx.await.ok().flatten()
+                remove_account(&client);
+                let device_id = client
+                    .device_id()
+                    .expect("Client should be authenticated")
+                    .into();
+                return Some(device_id);
+            }
+        }
+    }
 }
 
 /// Tries to log the user into the currently active account.
@@ -302,9 +294,8 @@ pub async fn login_username(
 
 pub mod oauth {
     use matrix_sdk::{
-        authentication::oauth::{
-            CsrfToken, OAuthAuthorizationData,
-            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+        authentication::oauth::registration::{
+            ApplicationType, ClientMetadata, Localized, OAuthGrantType,
         },
         reqwest::Url,
         ruma::serde::Raw,
@@ -313,34 +304,6 @@ pub mod oauth {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
-
-    struct OAuthLoginGuard {
-        client: Option<Client>,
-        state: Option<CsrfToken>,
-    }
-
-    impl OAuthLoginGuard {
-        fn new(client: Client) -> Self {
-            Self {
-                client: Some(client),
-                state: None,
-            }
-        }
-
-        fn arm(&mut self, data: &OAuthAuthorizationData) {
-            self.state = Some(data.state.clone());
-        }
-    }
-
-    impl Drop for OAuthLoginGuard {
-        fn drop(&mut self) {
-            if let (Some(client), Some(state)) = (self.client.take(), self.state.take())
-                && let Ok(handle) = tokio::runtime::Handle::try_current()
-            {
-                handle.spawn(async move { client.oauth().abort_login(&state).await });
-            }
-        }
-    }
 
     fn metadata() -> ClientMetadata {
         let ipv4_localhost_uri = Url::parse(&format!("http://{}/", Ipv4Addr::LOCALHOST))
@@ -399,14 +362,11 @@ pub mod oauth {
 
         let (redirect_uri, server_handle) = LocalServerBuilder::new().spawn().await?;
 
-        let mut guard = OAuthLoginGuard::new(client.clone());
-
         let data = client
             .oauth()
             .login(redirect_uri, device_id, Some(metadata.into()), None)
             .build()
             .await?;
-        guard.arm(&data);
 
         let query_string = {
             if webbrowser::open(data.url.as_str()).is_ok() {
@@ -428,6 +388,8 @@ pub mod oauth {
         };
 
         if let Err(err) = client.oauth().finish_login(query_string.into()).await {
+            client.oauth().abort_login(&data.state).await;
+
             anyhow::bail!("Error: failed to login: {err}");
         }
 
@@ -451,7 +413,7 @@ pub mod oauth {
 
     pub mod qr {
         use matrix_sdk::authentication::oauth::qrcode::{
-            GeneratedQrProgress, LoginProgress, SenderError,
+            CheckCodeSender, GeneratedQrProgress, LoginProgress,
         };
         use matrix_sdk::stream::StreamExt;
         use qrcode_generator::{Renderer, qr::Encoder};
@@ -478,8 +440,8 @@ pub mod oauth {
         /// On success, an authenticated Client is returned.
         pub async fn display(
             homeserver: String,
-            tx: mpsc::UnboundedSender<GeneratedQrState>,
-            mut rx: mpsc::UnboundedReceiver<u8>,
+            state_tx: mpsc::UnboundedSender<GeneratedQrState>,
+            mut check_code_rx: mpsc::UnboundedReceiver<u8>,
         ) -> anyhow::Result<Client> {
             let storage = storage::Core::new();
 
@@ -494,10 +456,22 @@ pub mod oauth {
             let oauth = client.oauth();
             let login_client = oauth.login_with_qr_code(Some(&metadata)).generate();
             let mut subscriber = login_client.subscribe_to_progress();
+            let mut login = login_client.into_future();
+            let mut sender: Option<CheckCodeSender> = None;
 
-            let task = tokio::spawn(async move {
-                while let Some(state) = subscriber.next().await {
-                    match state {
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    res = &mut login => break res.map_err(anyhow::Error::from),
+                    code = check_code_rx.recv(), if sender.is_some() => {
+                        let Some(s) = sender.take() else { continue };
+                        match code {
+                            Some(code) => { s.send(code).await.ok(); }
+                            // caller dropped check_code_tx
+                            None => break Err(anyhow::anyhow!("check code channel closed")),
+                        }
+                    }
+                    Some(state) = subscriber.next() => match state {
                         LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
                         LoginProgress::EstablishingSecureChannel(GeneratedQrProgress::QrReady(
                             data,
@@ -512,32 +486,24 @@ pub mod oauth {
                                 .to_svg_string(None::<String>)
                                 .unwrap();
 
-                            tx.send(GeneratedQrState::WaitingForScan(data)).ok();
+                            state_tx.send(GeneratedQrState::WaitingForScan(data)).ok();
                         }
                         LoginProgress::EstablishingSecureChannel(
-                            GeneratedQrProgress::QrScanned(sender),
+                            GeneratedQrProgress::QrScanned(s),
                         ) => {
-                            tx.send(GeneratedQrState::WaitingForCheckCode).ok();
-                            let Some(check_code) = rx.recv().await else {
-                                // Login cancelled or something else happened
-                                break;
-                            };
+                            state_tx.send(GeneratedQrState::WaitingForCheckCode).ok();
 
-                            match sender.send(check_code).await {
-                                Ok(())
-                                | Err(SenderError::AlreadySent | SenderError::CannotSend) => {}
-                            }
+                            sender = Some(s);
                         }
                         LoginProgress::WaitingForToken { user_code } => {
-                            tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
+                            state_tx.send(GeneratedQrState::WaitingForToken(user_code)).ok();
                         }
-                        LoginProgress::Done => break,
+                        LoginProgress::Done => (),
                     }
                 }
-            });
+            };
 
-            let result = login_client.await;
-            task.abort();
+            drop(login);
 
             result?;
 
@@ -575,7 +541,7 @@ pub mod oauth {
         /// Also saves the new data (users.toml, encrypted file, keyring entry)
         /// On success, an authenticated Client is returned.
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        pub async fn scan(tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
+        pub async fn scan(state_tx: mpsc::UnboundedSender<QrState>) -> anyhow::Result<Client> {
             use camera::{
                 CameraSystem, CaptureProfile, ConversionRequest, DeviceSelector, RgbConverter,
             };
@@ -593,7 +559,7 @@ pub mod oauth {
                 .start()
                 .await?;
 
-            tx.send(QrState::WaitingForScan).ok();
+            state_tx.send(QrState::WaitingForScan).ok();
 
             let decoded = loop {
                 let Ok(frame) = capture.next_frame().await else {
@@ -658,24 +624,26 @@ pub mod oauth {
 
             let login_client = oauth.login_with_qr_code(Some(&metadata)).scan(&qr_data);
             let mut subscriber = login_client.subscribe_to_progress();
+            let mut login = login_client.into_future();
 
-            let task = tokio::spawn(async move {
-                while let Some(state) = subscriber.next().await {
-                    match state {
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    res = &mut login => break res,
+                    Some(state) = subscriber.next() => match state {
                         LoginProgress::Starting | LoginProgress::SyncingSecrets => (),
                         LoginProgress::EstablishingSecureChannel(QrProgress { check_code }) => {
-                            tx.send(QrState::InputCheckCode(check_code)).ok();
+                            state_tx.send(QrState::InputCheckCode(check_code)).ok();
                         }
                         LoginProgress::WaitingForToken { user_code } => {
-                            tx.send(QrState::WaitingForToken(user_code)).ok();
+                            state_tx.send(QrState::WaitingForToken(user_code)).ok();
                         }
-                        LoginProgress::Done => break,
+                        LoginProgress::Done => (),
                     }
                 }
-            });
+            };
 
-            let result = login_client.await;
-            task.abort();
+            drop(login);
 
             result?;
 

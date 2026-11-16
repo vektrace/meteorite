@@ -10,7 +10,7 @@ repository = "https://github.com/vektrace/meteorite"
 [dependencies]
 meteorite-core = { path = "../meteorite-core" }
 
-tokio = { workspace = true }
+tokio = { version = "1.50.0", features = ["full"] }
 webbrowser = { workspace = true }
 
 dioxus = { version = "0.8.0-alpha.1", features = [] }
