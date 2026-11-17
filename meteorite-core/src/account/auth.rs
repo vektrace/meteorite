@@ -218,7 +218,7 @@ pub async fn handle_refresh_tokens(
 /// On success, an authenticated Client is returned.
 ///
 /// Can return `None` instead of a client when there is no active account
-pub async fn login() -> anyhow::Result<Option<Client>> {
+pub async fn restore_session() -> anyhow::Result<Option<Client>> {
     storage::Core::cleanup().await;
 
     let accounts = storage::Core::account_list()?;

@@ -31,7 +31,7 @@ pub fn LoadingScreen() -> Element {
         let _ = retry();
 
         async move {
-            let handle = tokio::spawn(async move { auth::login().await });
+            let handle = tokio::spawn(async move { auth::restore_session().await });
 
             match handle.await {
                 Ok(Ok(Some(client))) => {
