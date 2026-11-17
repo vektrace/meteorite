@@ -49,7 +49,7 @@ impl From<AccountList> for Vec<AccountData> {
 }
 
 impl AccountList {
-    fn active(&self) -> Option<&AccountData> {
+    pub fn active(&self) -> Option<&AccountData> {
         // filter the accounts for only active accounts
         let mut active_accounts = self.accounts.iter().filter(|a| a.active);
         // if multiple, no account is active
@@ -57,6 +57,10 @@ impl AccountList {
             (Some(account), None) => Some(account),
             _ => None,
         }
+    }
+
+    pub fn get_by_id(&self, id: &str) -> Option<&AccountData> {
+        self.accounts.iter().find(|a| a.id == id)
     }
 }
 
@@ -104,6 +108,7 @@ impl From<Account> for AuthSession {
 pub(crate) struct AccountData {
     // id used for files instead of user_id
     pub id: String,
+    pub store: String,
     pub user_id: OwnedUserId,
     pub active: bool,
 }

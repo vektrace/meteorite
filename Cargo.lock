@@ -4668,7 +4668,6 @@ dependencies = [
  "matrix-sdk",
  "qrcode-generator",
  "quircs",
- "rand 0.10.3",
  "serde",
  "sysdirs",
  "thiserror 2.0.21",

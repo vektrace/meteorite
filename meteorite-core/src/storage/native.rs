@@ -23,9 +23,11 @@ use crate::{
 };
 use age::{secrecy::ExposeSecret, x25519::Identity};
 use keyring_core::Entry;
-use matrix_sdk::{Client, ClientBuilder, SqliteStoreConfig, ruma::UserId};
-use rand::distr::{Alphanumeric, SampleString};
-use std::collections::{HashMap, HashSet};
+use matrix_sdk::{
+    Client, ClientBuilder, SqliteStoreConfig,
+    ruma::{DeviceId, UserId},
+};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,35 +37,20 @@ use std::sync::OnceLock;
 pub(crate) static BASE_PATH: OnceLock<PathBuf> = OnceLock::new();
 pub(crate) static ACCOUNT_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-#[derive(Debug)]
-enum AccountResource {
-    Folder(String, PathBuf),
-    File(String, PathBuf),
-    KeyringEntry(String),
-    User(String),
-}
-
-const USER: u8 = 1 << 0;
-const FILE: u8 = 1 << 1;
-const FOLDER: u8 = 1 << 2;
-const KEYRING: u8 = 1 << 3;
-
-const ALL: u8 = USER | FILE | FOLDER | KEYRING;
-
 /// Implementation of the storage API for native targets (mobile, desktop).
 pub(crate) struct Native {
     identity: Identity,
-    id: String,
+    store: String,
 }
 
 impl StorageApi for Native {
     fn new() -> Self {
-        let mut rng = rand::rng();
-        // generate id
-        let id = Alphanumeric.sample_string(&mut rng, 32);
         // generate x25519 identity
         let identity = Identity::generate();
-        Self { identity, id }
+        Self {
+            store: store_name(&identity),
+            identity,
+        }
     }
 
     fn load(id: &str) -> Result<(Self, Account)> {
@@ -97,7 +84,7 @@ impl StorageApi for Native {
         Ok((
             Self {
                 identity,
-                id: id.to_string(),
+                store: account_data.store.clone(),
             },
             Account {
                 data: account_data,
@@ -129,13 +116,18 @@ impl StorageApi for Native {
 
         let mut accounts = Self::account_list()?;
 
-        let dir_path = account_path.join(id);
         let enc_path = account_path.join(format!("{id}.enc"));
 
-        // should only fail on lacking perms
-        // we ignore and keep going (best effort deletion)
-        if dir_path.exists() {
-            fs::remove_dir_all(dir_path).ok();
+        let dir_name = accounts.get_by_id(id).map(|a| &a.store);
+
+        if let Some(dir_name) = dir_name {
+            let dir_path = account_path.join(dir_name);
+
+            // should only fail on lacking perms
+            // we ignore and keep going (best effort deletion)
+            if dir_path.exists() {
+                fs::remove_dir_all(dir_path).ok();
+            }
         }
 
         if enc_path.exists() {
@@ -170,19 +162,13 @@ impl StorageApi for Native {
         //  - encrypted files
         //  - accounts
         //  - keyring entries
-        let mut resources = Vec::new();
+        let mut folders: Vec<(String, PathBuf)> = Vec::new();
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
 
         // get the user list
         let Ok(mut accounts) = Self::account_list() else {
             return;
         };
-
-        resources.extend(
-            accounts
-                .accounts
-                .iter()
-                .map(|account| AccountResource::User(account.id.clone())),
-        );
 
         for entry in match fs::read_dir(account_path) {
             Ok(entries) => entries,
@@ -193,89 +179,73 @@ impl StorageApi for Native {
             // collect everything into resources vec
             let path = entry.path();
 
-            // filter out only the folders
             if path.is_dir()
                 && let Some(name) = entry.file_name().to_str().map(str::to_owned)
             {
-                resources.push(AccountResource::Folder(name, path.clone()));
-            }
-
-            // filter out only the files except the users.toml file
-            if path.is_file()
+                // filter out only the folders
+                folders.push((name, path));
+            } else if path.is_file()
                 && path != users_path
                 && let Some(name) = path.file_prefix().unwrap().to_str().map(str::to_owned)
             {
-                resources.push(AccountResource::File(name, path));
+                // filter out only the files except the users.toml file
+
+                files.push((name, path));
             }
         }
 
-        match Entry::search(&[("service", APP_NAME)].into()) {
-            Ok(entries) => resources.extend(entries.iter().filter_map(|entry| {
-                Some(AccountResource::KeyringEntry(entry.get_specifiers()?.1))
-            })),
+        let keyring_entries: Vec<String> = match Entry::search(&[("service", APP_NAME)].into()) {
+            Ok(entries) => entries
+                .iter()
+                .filter_map(|entry| Some(entry.get_specifiers()?.1))
+                .collect(),
             Err(_) => return,
-        }
+        };
 
-        // hashmap of all seen (if all are seen: 1111, each bit represents one variant seen)
-        let mut seen: HashMap<&str, u8> = HashMap::new();
+        let folder_names: HashSet<&str> = folders.iter().map(|(name, _)| name.as_str()).collect();
+        let file_names: HashSet<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+        let keyring_names: HashSet<&str> = keyring_entries.iter().map(String::as_str).collect();
 
-        for resource in &resources {
-            let (name, bit) = match resource {
-                AccountResource::User(s) => (s.as_str(), USER),
-                AccountResource::File(s, _) => (s.as_str(), FILE),
-                AccountResource::Folder(s, _) => (s.as_str(), FOLDER),
-                AccountResource::KeyringEntry(s) => (s.as_str(), KEYRING),
-            };
-
-            *seen.entry(name).or_default() |= bit;
-        }
-
-        let complete: HashSet<&str> = seen
+        let complete_ids: HashSet<String> = accounts
+            .accounts
             .iter()
-            .filter(|(_, mask)| **mask == ALL)
-            .map(|(name, _)| *name)
+            .filter(|account| {
+                file_names.contains(account.id.as_str())
+                    && keyring_names.contains(account.id.as_str())
+                    && folder_names.contains(account.store.as_str())
+            })
+            .map(|account| account.id.clone())
             .collect();
 
-        for resource in &resources {
-            let name = match resource {
-                AccountResource::User(s)
-                | AccountResource::File(s, _)
-                | AccountResource::Folder(s, _)
-                | AccountResource::KeyringEntry(s) => s.as_str(),
-            };
+        let complete_stores: HashSet<&str> = accounts
+            .accounts
+            .iter()
+            .filter(|account| complete_ids.contains(&account.id))
+            .map(|account| account.store.as_str())
+            .collect();
 
-            if complete.contains(name) {
-                continue;
+        for (name, path) in &folders {
+            if !complete_stores.contains(name.as_str()) {
+                fs::remove_dir_all(path).ok();
             }
+        }
 
-            match resource {
-                AccountResource::File(_, path) => {
-                    // delete file
-                    fs::remove_file(path).ok();
-                }
+        for (name, path) in &files {
+            if !complete_ids.contains(name.as_str()) {
+                fs::remove_file(path).ok();
+            }
+        }
 
-                AccountResource::Folder(_, path) => {
-                    // delete folder
-                    fs::remove_dir_all(path).ok();
-                }
-
-                AccountResource::KeyringEntry(name) => {
-                    // delete keyring entry
-                    if let Ok(entry) = Entry::new(APP_NAME, name) {
-                        entry.delete_credential().ok();
-                    }
-                }
-
-                AccountResource::User(_) => {
-                    // removal happens later
-                }
+        for name in &keyring_entries {
+            if !complete_ids.contains(name.as_str())
+                && let Ok(entry) = Entry::new(APP_NAME, name)
+            {
+                entry.delete_credential().ok();
             }
         }
 
         // remove all incomplete accounts from users.toml
-        accounts
-            .accounts
-            .retain(|a| complete.contains(a.id.as_str()));
+        accounts.accounts.retain(|a| complete_ids.contains(&a.id));
 
         let Ok(account_data) = toml::to_string(&accounts) else {
             return;
@@ -332,8 +302,10 @@ impl StorageApi for Native {
             .get()
             .expect("account path should be initialized");
 
+        let id = derive_id(user_id, &secure_data.device_id);
+
         let users_path = account_path.join("users.toml");
-        let secure_path = account_path.join(format!("{}.enc", self.id));
+        let secure_path = account_path.join(format!("{}.enc", id));
 
         // secure_data struct -> toml
         let serialized =
@@ -343,8 +315,7 @@ impl StorageApi for Native {
         let encrypted_bytes = age::encrypt(&self.identity.to_public(), serialized.as_bytes())
             .map_err(|e| StorageError::Backend(Box::new(e)))?;
 
-        let entry =
-            Entry::new(APP_NAME, &self.id).map_err(|e| StorageError::Backend(Box::new(e)))?;
+        let entry = Entry::new(APP_NAME, &id).map_err(|e| StorageError::Backend(Box::new(e)))?;
 
         // read unencrypted file with all users
         let mut accounts = Self::account_list()?;
@@ -353,7 +324,8 @@ impl StorageApi for Native {
         accounts.accounts.iter_mut().for_each(|a| a.active = false);
 
         let account_data = AccountData {
-            id: self.id.clone(),
+            store: self.store.clone(),
+            id,
             user_id: user_id.into(),
             active: true,
         };
@@ -387,11 +359,34 @@ impl StorageApi for Native {
         let sqlite_path = ACCOUNT_PATH
             .get()
             .expect("account path should be initialized")
-            .join(&self.id);
+            .join(&self.store);
         let config = SqliteStoreConfig::new(&sqlite_path)
             .key(Some(self.identity.to_string().expose_secret().as_bytes()));
         Client::builder().sqlite_store_with_config_and_cache_path(config, None::<PathBuf>)
     }
+}
+
+/// FNV-1a (64-bit)
+fn fnv1a(parts: &[&str]) -> u64 {
+    // 64-bit offset basis: 14695981039346656037
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for part in parts {
+        for byte in part.bytes().chain([0xff]) {
+            hash ^= byte as u64;
+            // 64-bit FNV prime: 1099511628211
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+
+fn derive_id(user_id: &UserId, device_id: &DeviceId) -> String {
+    format!("{:016x}", fnv1a(&[user_id.as_str(), device_id.as_str()]))
+}
+
+fn store_name(identity: &Identity) -> String {
+    let pub_key = identity.to_public().to_string();
+    format!("{:016x}", fnv1a(&[pub_key.as_str()]))
 }
 
 fn atomic_write<C: AsRef<[u8]>>(target: &Path, contents: C) -> std::io::Result<()> {

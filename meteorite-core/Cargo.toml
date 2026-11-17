@@ -15,7 +15,6 @@ matrix-sdk = { version = "0.19.0", features = [
     "local-server",
 ] }
 qrcode-generator = "6.1.2"
-rand = "0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.50.0", features = ["sync", "macros"] }
 toml = "1.1.2"
